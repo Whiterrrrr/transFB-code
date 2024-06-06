@@ -1,0 +1,56 @@
+# training/eval
+batch_size: 512
+max_buffer_episodes: 5000
+z_inference_steps: 10000
+discount: 0.98
+eval_frequency: 10000  # how often to evaluate the agent in learning steps
+eval_rollouts: 10  # how many rollouts to average over when evaluating
+
+
+name: "twonet_exp_qloss"
+save_dir: "/home/tsinghuaair/zhengkx/conservative-world-models/agents/twonet_exp/saved_models"
+
+preprocessor_hidden_dimension: 1024
+preprocessor_hidden_layers: 2
+preprocessor_output_dimension: 512
+preprocessor_activation: "relu"
+
+z_dimension: 50
+
+forward_hidden_dimension: 256
+forward_hidden_layers: 3
+forward_number_of_features: 2
+forward_activation: "relu"
+
+backward_hidden_layers: 3
+backward_hidden_dimension: 256
+backward_activation: "relu"
+
+backward_preprocess: False
+backward_preprocess_hidden_dimension: 512
+backward_preprocess_hidden_layers: 2
+backward_preprocess_output_dim: 512
+
+actor_hidden_dimension: 1024
+actor_hidden_layers: 2
+actor_activation: "relu"
+
+
+seed: 42
+critic_learning_rate: 0.00008
+actor_learning_rate: 0.0001
+orthonormalisation_coefficient: 1
+q_coefficient: 1
+z_mix_ratio: 0.5
+gaussian_actor: false
+std_dev_clip: 0.3
+std_dev_schedule: "0.2"
+std_dev_eval: 0.05
+tau: 0.01
+
+total_action_samples: 12
+ood_action_weight: 0.5  # should be multiple of 0.25
+alpha: 0.01
+target_conservative_penalty: 50.0
+lagrange: True
+learning_rate_coefficient: 1

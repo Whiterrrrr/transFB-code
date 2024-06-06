@@ -1,0 +1,3 @@
+export CUDA_VISIBLE_DEVICES=1
+export WANDB_API_KEY=8d739e5eaa28091db300de37eb709020ff7cf27c
+python /home/tsinghuaair/zhengkx/conservative-world-models/main_offline.py fb jaco rnd --eval_tasks reach_bottom_left reach_bottom_right reach_top_left reach_top_right

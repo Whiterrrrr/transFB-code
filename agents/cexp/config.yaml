@@ -1,0 +1,76 @@
+# training/eval
+batch_size: 128
+max_buffer_episodes: 5000
+z_inference_steps: 10000
+discount: 0.98
+eval_frequency: 10000  # how often to evaluate the agent in learning steps
+eval_rollouts: 10  # how many rollouts to average over when evaluating
+
+# forward-backward
+name: "auto single 50 actor 5e-5 critic 8e-5 bg0.8 2branch all noQloss"
+save_dir: "/home/tsinghuaair/zhengkx/conservative-world-models/agents/cexp/tmp"
+preprocessor_hidden_dimension: 1024
+preprocessor_hidden_layers: 2
+preprocessor_output_dimension: 512
+preprocessor_activation: "relu"
+
+z_dimension: 50
+
+forward_hidden_dimension: 256
+forward_hidden_layers: 2
+forward_number_of_features: 2  # {obs-action, obs-z}
+forward_activation: "relu"
+
+backward_preprocess: False
+backward_preporcess_hidden_dimension: 512
+backward_preprocess_output_dimension: 512
+backward_preprocess_hidden_layers: 1
+backward_preprocess_activation: "relu"
+backward_hidden_dimension: 256
+backward_hidden_layers: 3
+backward_activation: "relu"
+
+use_trans: true
+use_cons: true
+use_res: true
+use_fed: true
+use_VIB: false
+use_dr3: false
+use_2branch: true
+use_q_loss: false
+q_coefficient: 1
+use_m_cons: false
+M_pealty_coefficient: 1
+operator_hidden_dimension: 512
+operator_hidden_layers: 3
+operator_activation: "relu"
+
+mul_trans: false
+trans_hidden_dimension: 256
+use_cross_attention: false
+num_attention_heads: 1
+n_attention_layers: 2
+n_linear_layers: 2
+dropout_rate: 0.1
+
+actor_hidden_dimension: 1024
+actor_hidden_layers: 2
+actor_activation: "relu"
+
+seed: 42
+critic_learning_rate: 0.00008
+actor_learning_rate: 0.00005
+learning_steps: 1000000
+b_learning_rate_coefficient: 0.8
+g_learning_rate_coefficient: 0.8
+orthonormalisation_coefficient: 1
+z_mix_ratio: 0.5
+gaussian_actor: false
+std_dev_clip: 0.3
+std_dev_schedule: "0.2"
+std_dev_eval: 0.05
+tau: 0.01
+
+# conservative parameters   
+total_action_samples: 12
+ood_action_weight: 0.25  # should be multiple of 0.25
