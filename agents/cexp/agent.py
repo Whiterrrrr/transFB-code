@@ -182,6 +182,7 @@ class CEXP(AbstractAgent):
         self.use_VIB = use_VIB
         self.use_2branch = use_2branch
         self.use_dual = use_dual
+        self.use_cross_attention = use_cross_attention
         
         # optimisers
         self.Operate_optimizer = torch.optim.AdamW(
@@ -371,7 +372,6 @@ class CEXP(AbstractAgent):
         step: int,
     ):
         #TODO: add the implementation for the dual network
-        
         with torch.no_grad():
             actor_std_dev = schedule(self.std_dev_schedule, step)
             next_actions, _ = self.actor(
@@ -405,7 +405,6 @@ class CEXP(AbstractAgent):
             M1_next, M2_next = M_next[:B_next.size(0)],  M_next[B_next.size(0):]
             M1_rand, M2_rand = M_rand[:B_rand.size(0)], M_rand[B_rand.size(0):]
 
-
         fb_off_diag_loss = 0.5 * sum(
             (M - discounts.repeat(int(B_rand.shape[0] // F1.shape[0]), 1) * target_M).pow(2).mean()
             for M in [M1_rand, M2_rand]
@@ -424,10 +423,13 @@ class CEXP(AbstractAgent):
                         torch.cat((zs, zs), dim=0)
                     ).squeeze() 
                     next_Q = torch.min(next_Q[:zs.size(0)], next_Q[zs.size(0):])
-
-                cov = torch.matmul(B_next.T, B_next) / B_next.shape[0]
-                inv_cov = torch.inverse(cov)
-                implicit_reward = (torch.matmul(B_next, inv_cov) * zs).sum(dim=1)  # batch_size
+                if self.use_cross_attention:
+                    B_pinv = torch.pinverse(B_next)
+                    implicit_reward = torch.diag(torch.matmul(zs, B_pinv))
+                else:
+                    cov = torch.matmul(B_next.T, B_next) / B_next.shape[0]
+                    inv_cov = torch.inverse(cov)
+                    implicit_reward = (torch.matmul(B_next, inv_cov) * zs).sum(dim=1)  # batch_size
                 target_Q = implicit_reward.detach() + discounts.squeeze() * next_Q  # batch_size
             if not self.use_VIB:
                 Q = self.Operate.operator_target(

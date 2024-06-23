@@ -31,18 +31,13 @@ parser.add_argument("exploration_algorithm", type=str)
 parser.add_argument("--wandb_logging", type=str, default="True")
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--alpha", type=float, default=1)
-parser.add_argument("--discount", type=float, default=0.98)
 parser.add_argument("--z_dimension", type=int, default=50)
 parser.add_argument("--weighted_cml", type=bool, default=False)
-parser.add_argument("--total_action_samples", type=int, default=12)
 parser.add_argument("--ood_action_weight", type=float, default=0.5)
 parser.add_argument("--train_task", type=str, default="")
 parser.add_argument("--dataset_transitions", type=int, default=100000)
 parser.add_argument("--eval_tasks", nargs="+", required=True, default=["flip", "run"])
 parser.add_argument("--learning_steps", type=int, default=1000000)
-parser.add_argument("--z_inference_steps", type=int, default=10000)
-parser.add_argument("--run_name", type=str, default=None)
-parser.add_argument("--model_name", type=str, default=None)
 parser.add_argument("--lagrange", type=str, default="True")
 parser.add_argument("--target_conservative_penalty", type=float, default=50.0)
 parser.add_argument("--action_condition_index", type=int)
@@ -63,11 +58,6 @@ if args.algorithm in ("vcfb", "vcalfb"):
 elif args.algorithm in ("mcfb", "mcalfb"):
     args.vcfb = False
     args.mcfb = True
-
-if args.lagrange == "True":
-    args.lagrange = True
-elif args.lagrange == "False":
-    args.lagrange = False
 
 # action condition for subsampling dataset
 if args.action_condition_index is not None:

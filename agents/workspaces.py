@@ -258,15 +258,10 @@ class OfflineRLWorkspace(AbstractWorkspace):
             )
             model_path = Path(self.model_dir + '/' + run.name)
             makedirs(str(model_path))
-
         else:
             date = datetime.today().strftime("Y-%m-%d-%H-%M-%S")
-            model_path = self.model_dir / f"local-run-{date}"
+            model_path = Path(self.model_dir +'/'+ f"local-run-{date}")
             makedirs(str(model_path))
-
-        # date = datetime.today().strftime("Y-%m-%d-%H-%M-%S")
-        # model_path = Path(self.model_dir +'/'+ f"local-run-{date}")
-        # makedirs(str(model_path))
 
         logger.info(f"Training {agent.name}.")
         best_mean_task_reward = -np.inf

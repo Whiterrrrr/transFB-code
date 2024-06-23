@@ -7,14 +7,12 @@ eval_frequency: 10000  # how often to evaluate the agent in learning steps
 eval_rollouts: 10  # how many rollouts to average over when evaluating
 
 # forward-backward
-name: "auto single 50 actor 5e-5 critic 8e-5 bg0.8 2branch all noQloss"
-save_dir: "/home/tsinghuaair/zhengkx/conservative-world-models/agents/cexp/tmp"
+name: "cross with reward"
+save_dir: "./agents/cexp/save"
 preprocessor_hidden_dimension: 1024
 preprocessor_hidden_layers: 2
 preprocessor_output_dimension: 512
 preprocessor_activation: "relu"
-
-z_dimension: 50
 
 forward_hidden_dimension: 256
 forward_hidden_layers: 2
@@ -32,13 +30,13 @@ backward_activation: "relu"
 
 use_trans: true
 use_cons: true
-use_res: true
-use_fed: true
+use_res: false
+use_fed: false
 use_VIB: false
 use_dr3: false
-use_2branch: true
-use_q_loss: false
-use_cross_attention: false
+use_2branch: false
+use_q_loss: true
+use_cross_attention: true
 use_dual: false
 q_coefficient: 1
 use_m_cons: false
@@ -58,12 +56,10 @@ actor_hidden_dimension: 1024
 actor_hidden_layers: 2
 actor_activation: "relu"
 
-seed: 42
 critic_learning_rate: 0.00008
 actor_learning_rate: 0.00005
-learning_steps: 1000000
-b_learning_rate_coefficient: 0.8
-g_learning_rate_coefficient: 0.8
+b_learning_rate_coefficient: 1
+g_learning_rate_coefficient: 1
 orthonormalisation_coefficient: 1
 z_mix_ratio: 0.5
 gaussian_actor: false
