@@ -214,7 +214,7 @@ class BidirectionalAttentionMixnet(nn.Module):
                     self.attention_layers.append(nn.Linear(z_dim, z_dim * 4).to(device))
                     self.attention_layers.append(nn.Linear(z_dim * 4, z_dim).to(device))
                     self.attention_layers.append(nn.LayerNorm(z_dim).to(device))
-            self.linear_layers.append(nn.Linear(z_dim * 2, hidden_dim).to(device))
+            self.linear_layers.append(nn.Linear(z_dim, hidden_dim).to(device))
             self.linear_layers.append(nn.LeakyReLU())
         else:
             for _ in range(n_attention_layers):
@@ -225,7 +225,7 @@ class BidirectionalAttentionMixnet(nn.Module):
                     self.attention_layers.append(nn.Linear(z_dim, z_dim * 4).to(device))
                     self.attention_layers.append(nn.Linear(z_dim * 4, z_dim).to(device))
                     self.attention_layers.append(nn.LayerNorm(z_dim).to(device)) 
-            self.linear_layers.append(nn.Linear(z_dim, hidden_dim).to(device))
+            self.linear_layers.append(nn.Linear(z_dim * 2, hidden_dim).to(device))
             self.linear_layers.append(nn.LeakyReLU())
             n_linear_layers -= 1
         
