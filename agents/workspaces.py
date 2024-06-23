@@ -33,9 +33,6 @@ from agents.cexp.agent import CEXP
 from agents.iexp.agent import IEXP
 
 class OnlineRLWorkspace(AbstractWorkspace):
-    """
-    Trains/evals/rollouts online RL algorithm on one task
-    """
 
     def __init__(
         self,
@@ -66,9 +63,7 @@ class OnlineRLWorkspace(AbstractWorkspace):
         agent_config: Dict,
         replay_buffer: SoftActorCriticReplayBuffer,
     ):
-        """
-        Trains online RL algorithm on one task.
-        """
+
         if self.wandb_logging:
             run = wandb.init(
                 entity='1155173723',
@@ -169,14 +164,6 @@ class OnlineRLWorkspace(AbstractWorkspace):
         agent: SAC,
         task: str,
     ) -> Dict[str, float]:
-        """
-        Performs eval rollouts.
-        Args:
-            agent: agent to evaluate
-            task: task to evaluate on
-        Returns:
-            metrics: dict of metrics
-        """
 
         logger.info("Performing eval rollouts.")
         eval_rewards = []
@@ -202,9 +189,6 @@ class OnlineRLWorkspace(AbstractWorkspace):
 
 
 class OfflineRLWorkspace(AbstractWorkspace):
-    """
-    Trains/evals/rollouts an offline RL agent given
-    """
 
     def __init__(
         self,
@@ -244,9 +228,7 @@ class OfflineRLWorkspace(AbstractWorkspace):
         agent_config: Dict,
         replay_buffer: Union[OfflineReplayBuffer, FBReplayBuffer],
     ) -> None:
-        """
-        Trains an offline RL algorithm on one task.
-        """
+
         if self.wandb_logging:
             run = wandb.init(
                 config=agent_config,
@@ -333,14 +315,6 @@ class OfflineRLWorkspace(AbstractWorkspace):
         agent: Union[CQL, SAC, FB, CFB, CalFB],
         tasks: List[str],
     ) -> Dict[str, float]:
-        """
-        Performs eval rollouts.
-        Args:
-            agent: agent to evaluate
-            tasks: tasks to evaluate on
-        Returns:
-            metrics: dict of metrics
-        """
 
         if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, IEXP) or isinstance(agent, IFB):
             zs = {}
@@ -401,9 +375,6 @@ class OfflineRLWorkspace(AbstractWorkspace):
 
 
 class FinetuningWorkspace(OfflineRLWorkspace):
-    """
-    Finetunes FB or CFB on one task.
-    """
 
     def __init__(
         self,
@@ -471,14 +442,6 @@ class FinetuningWorkspace(OfflineRLWorkspace):
         agent_config: Dict,
         replay_buffer: FBReplayBuffer,
     ) -> None:
-        """
-        Finetunes FB or CFB on one task offline, without online interaction.
-        Args:
-            agent: agent to finetune
-            task: task to finetune on
-            agent_config: agent config
-            replay_buffer: replay buffer for z sampling
-        """
 
         if self.wandb_logging:
             run = wandb.init(
@@ -606,15 +569,6 @@ class FinetuningWorkspace(OfflineRLWorkspace):
         replay_buffer: OnlineFBReplayBuffer,
         episodes: int,
     ) -> None:
-        """
-        Finetunes FB or CFB on one task using online data.
-        Args:
-            agent: agent to finetune
-            task: task to finetune on
-            agent_config: agent config
-            replay_buffer: replay buffer for z sampling
-            episodes: number of episodes to finetune for
-        """
 
         if self.wandb_logging:
             run = wandb.init(
