@@ -494,6 +494,8 @@ elif config["algorithm"] == "cexp":
         use_2branch = config['use_2branch'],
         use_cross_attention=config['use_cross_attention'],
         use_dual=config['use_dual'],
+        use_dr3=config['use_dr3'],
+        dr3_coefficient=config['dr3_coefficient'],
     )
     
     replay_buffer = FBReplayBuffer(

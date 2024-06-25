@@ -11,7 +11,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Union, Optional
 from scipy import stats
-import accelerate
 
 from rewards import RewardFunctionConstructor
 from custom_dmc_tasks.point_mass_maze import GOALS as point_mass_maze_goals

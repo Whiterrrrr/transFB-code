@@ -5,7 +5,6 @@ from typing import Tuple, Dict, Optional
 import torch
 import torch.nn.functional as F
 from torch.distributions import Normal, kl_divergence
-import time
 import numpy as np
 
 from agents.cexp.module import MixNetRepresentation
@@ -78,6 +77,8 @@ class CEXP(AbstractAgent):
         use_dual: bool,
         use_cross_attention: bool,
         use_2branch: bool = False,
+        use_dr3: bool = False,
+        dr3_coefficient: float = 1,
         lagrange: bool = False,
         use_icm: bool = False,
         M_pealty_coefficient: float = 1.0,
@@ -126,6 +127,7 @@ class CEXP(AbstractAgent):
             use_2branch=use_2branch, 
             use_cross_attention=use_cross_attention,
             use_dual=use_dual,
+            use_dr3=use_dr3
         )
 
         self.actor = ActorModel(
@@ -183,6 +185,8 @@ class CEXP(AbstractAgent):
         self.use_2branch = use_2branch
         self.use_dual = use_dual
         self.use_cross_attention = use_cross_attention
+        self.use_dr3 = use_dr3
+        self.dr3_coefficient = dr3_coefficient
         
         # optimisers
         self.Operate_optimizer = torch.optim.AdamW(
@@ -273,7 +277,7 @@ class CEXP(AbstractAgent):
             observations_rand=batch.other_observations,
             next_observations=batch.next_observations,
             actions=batch.actions,
-            discounts=batch.discounts,
+            discounts=batch.discounts.squeeze(),
             zs=zs,
             step=step,
         )
@@ -381,12 +385,21 @@ class CEXP(AbstractAgent):
             target_F1, target_F2 = self.Operate.forward_representation_target(observation=next_observations, z=zs, action=next_actions)
             target_B = self.Operate.backward_representation_target(observation=observations_rand)
             if not self.use_VIB:
-                target_M = self.Operate.operator_target(
-                    torch.cat((
-                        target_F1.repeat(int(target_B.shape[0] // target_F1.shape[0]), 1), 
-                        target_F2.repeat(int(target_B.shape[0] // target_F2.shape[0]), 1)), dim=0), 
-                    torch.cat((target_B, target_B), dim=0)
-                )
+                if not self.use_dr3:
+                    target_M = self.Operate.operator_target(
+                        torch.cat((
+                            target_F1.repeat(int(target_B.shape[0] // target_F1.shape[0]), 1), 
+                            target_F2.repeat(int(target_B.shape[0] // target_F2.shape[0]), 1)), dim=0), 
+                        torch.cat((target_B, target_B), dim=0)
+                    ).squeeze()
+                else:
+                    target_M, target_M_feature = self.Operate.operator_target(
+                        torch.cat((
+                            target_F1.repeat(int(target_B.shape[0] // target_F1.shape[0]), 1), 
+                            target_F2.repeat(int(target_B.shape[0] // target_F2.shape[0]), 1)), dim=0), 
+                        torch.cat((target_B, target_B), dim=0)
+                    )
+                    target_M, target_M_feature = target_M.squeeze(), target_M_feature.squeeze()
                 target_M = torch.min(target_M[:target_B.size(0)], target_M[target_B.size(0):])
 
         # --- Forward-backward representation loss ---
@@ -395,13 +408,25 @@ class CEXP(AbstractAgent):
         B_next, B_rand = B[:next_observations.size(0)], B[next_observations.size(0):]
 
         if not self.use_VIB:
-            M_next = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((B_next, B_next), dim=0))
-            M_rand = self.Operate.operator(
-                torch.cat((
-                    F1.repeat(int(B_rand.shape[0] // F1.shape[0]), 1), 
-                    F2.repeat(int(B_rand.shape[0] // F2.shape[0]), 1)), dim=0), 
-                torch.cat((B_rand, B_rand), dim=0)
-            )
+            if not self.use_dr3:
+                M_next = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((B_next, B_next), dim=0)).squeeze()
+                M_rand = self.Operate.operator(
+                    torch.cat((
+                        F1.repeat(int(B_rand.shape[0] // F1.shape[0]), 1), 
+                        F2.repeat(int(B_rand.shape[0] // F2.shape[0]), 1)), dim=0), 
+                    torch.cat((B_rand, B_rand), dim=0)
+                ).squeeze()
+                dr3_implict_reg=0
+            else:
+                M_next, M_next_feature = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((B_next, B_next), dim=0))
+                M_rand, M_rand_feature = self.Operate.operator(
+                    torch.cat((
+                        F1.repeat(int(B_rand.shape[0] // F1.shape[0]), 1), 
+                        F2.repeat(int(B_rand.shape[0] // F2.shape[0]), 1)), dim=0), 
+                    torch.cat((B_rand, B_rand), dim=0)
+                )
+                dr3_implict_reg = torch.mean(torch.sum(M_rand_feature*target_M_feature, dim=1))
+                M_next, M_rand, M_next_feature, M_rand_feature = M_next.squeeze(), M_rand.squeeze(), M_next_feature.squeeze(), M_rand_feature.squeeze()
             M1_next, M2_next = M_next[:B_next.size(0)],  M_next[B_next.size(0):]
             M1_rand, M2_rand = M_rand[:B_rand.size(0)], M_rand[B_rand.size(0):]
 
@@ -413,15 +438,23 @@ class CEXP(AbstractAgent):
         fb_diag_loss = -sum(M.mean() for M in [M1_next, M2_next])
 
         fb_loss = fb_diag_loss + fb_off_diag_loss
-        total_loss = fb_loss
+        total_loss = fb_loss + dr3_implict_reg
 
         if self.use_q_loss:
             with torch.no_grad():
                 if not self.use_VIB:
-                    next_Q = self.Operate.operator_target(
-                        torch.cat((target_F1, target_F2), dim=0), 
-                        torch.cat((zs, zs), dim=0)
-                    ).squeeze() 
+                    if not self.use_dr3:
+                        next_Q = self.Operate.operator_target(
+                            torch.cat((target_F1, target_F2), dim=0), 
+                            torch.cat((zs, zs), dim=0)
+                        ).squeeze() 
+                        next_Q = next_Q.squeeze()
+                    else:
+                        next_Q, next_Q_feature = self.Operate.operator_target(
+                            torch.cat((target_F1, target_F2), dim=0), 
+                            torch.cat((zs, zs), dim=0)
+                        )
+                        next_Q, next_Q_feature = next_Q.squeeze(), next_Q_feature.squeeze()
                     next_Q = torch.min(next_Q[:zs.size(0)], next_Q[zs.size(0):])
                 if self.use_cross_attention:
                     B_pinv = torch.pinverse(B_next)
@@ -432,10 +465,17 @@ class CEXP(AbstractAgent):
                     implicit_reward = (torch.matmul(B_next, inv_cov) * zs).sum(dim=1)  # batch_size
                 target_Q = implicit_reward.detach() + discounts.squeeze() * next_Q  # batch_size
             if not self.use_VIB:
-                Q = self.Operate.operator_target(
-                    torch.cat((F1, F2), dim=0), 
-                    torch.cat((zs, zs), dim=0)
-                ).squeeze() 
+                if not self.use_dr3:
+                    Q = self.Operate.operator_target(
+                        torch.cat((F1, F2), dim=0), 
+                        torch.cat((zs, zs), dim=0)
+                    ).squeeze() 
+                else:
+                    Q, Q_feature = self.Operate.operator_target(
+                        torch.cat((F1, F2), dim=0), 
+                        torch.cat((zs, zs), dim=0)
+                    )
+                    Q, Q_feature = Q.squeeze(), Q_feature.squeeze()
                 Q = torch.min(Q[:zs.size(0)], Q[zs.size(0):])
 
             q_loss = F.mse_loss(Q, target_Q) * self.q_coefficient
@@ -516,10 +556,17 @@ class CEXP(AbstractAgent):
 
         # get Qs from F and z'
         if not self.use_VIB:
-            Q = self.Operate.operator_target(
-                torch.cat((F1, F2), dim=0), 
-                torch.cat((z, z), dim=0)
-            ).squeeze() 
+            if not self.use_dr3:
+                Q = self.Operate.operator_target(
+                    torch.cat((F1, F2), dim=0), 
+                    torch.cat((z, z), dim=0)
+                ).squeeze() 
+            else:
+                Q, _ = self.Operate.operator_target(
+                    torch.cat((F1, F2), dim=0), 
+                    torch.cat((z, z), dim=0)
+                )
+                Q = Q.squeeze()
             Q = torch.min(Q[:z.size(0)], Q[z.size(0):])
         actor_loss = -Q
 
@@ -584,16 +631,21 @@ class CEXP(AbstractAgent):
         self, observation: torch.Tensor, z: torch.Tensor, action: torch.Tensor
     ):
 
-        F1, F2 = self.Operate.forward_representation(
-            observation=observation, z=z, action=action
-        )
+        F1, F2 = self.Operate.forward_representation(observation=observation, z=z, action=action)
 
         # get Qs from F and z
         if not self.use_VIB:
-            Q = self.Operate.operator_target(
-                torch.cat((F1, F2), dim=0), 
-                torch.cat((z, z), dim=0)
-            ).squeeze() 
+            if not self.use_dr3:
+                Q = self.Operate.operator_target(
+                    torch.cat((F1, F2), dim=0), 
+                    torch.cat((z, z), dim=0)
+                ).squeeze() 
+            else:
+                Q, _ = self.Operate.operator_target(
+                    torch.cat((F1, F2), dim=0), 
+                    torch.cat((z, z), dim=0)
+                )
+                Q = Q.squeeze()
         return torch.min(Q[:z.size(0)], Q[z.size(0):])
 
     @staticmethod
@@ -703,10 +755,17 @@ class CEXP(AbstractAgent):
 
         # convert to Qs
         if not self.use_VIB:
-            cql_cat_Q = self.Operate.operator(
-                torch.cat((cat_F1, cat_F2), dim=0),
-                torch.cat((repeated_zs, repeated_zs), dim=0)
-            )
+            if not self.use_dr3:
+                cql_cat_Q = self.Operate.operator(
+                    torch.cat((cat_F1, cat_F2), dim=0),
+                    torch.cat((repeated_zs, repeated_zs), dim=0)
+                ).squeeze()
+            else:
+                cql_cat_Q, _ = self.Operate.operator(
+                    torch.cat((cat_F1, cat_F2), dim=0),
+                    torch.cat((repeated_zs, repeated_zs), dim=0)
+                )
+                cql_cat_Q = cql_cat_Q.squeeze()
             cql_cat_Q1, cql_cat_Q2 = cql_cat_Q[:repeated_zs.size(0)], cql_cat_Q[repeated_zs.size(0):]
 
         cql_logsumexp_Q = (
@@ -716,10 +775,17 @@ class CEXP(AbstractAgent):
 
         # get existing Qs
         if not self.use_VIB:
-            Q = self.Operate.operator_target(
-                torch.cat((F1, F2), dim=0), 
-                torch.cat((zs, zs), dim=0)
-            ).squeeze() 
+            if not self.use_dr3:
+                Q = self.Operate.operator_target(
+                    torch.cat((F1, F2), dim=0), 
+                    torch.cat((zs, zs), dim=0)
+                ).squeeze() 
+            else:
+                Q, _ = self.Operate.operator_target(
+                    torch.cat((F1, F2), dim=0), 
+                    torch.cat((zs, zs), dim=0)
+                )
+                Q = Q.squeeze()
             Q1, Q2 = Q[:zs.size(0)], Q[zs.size(0):]
                 
         conservative_penalty_Q = cql_logsumexp_Q - (Q1 + Q2).mean()

@@ -196,13 +196,28 @@ class MulHeadSelfAttention(nn.Module):
     
     
 class BidirectionalAttentionMixnet(nn.Module):
-    def __init__(self, z_dim, hidden_dim, num_attention_heads, n_attention_layers, n_linear_layers, dropout_rate, device, use_res, use_fed, use_VIB=False, use_cross_attention=False):
+    def __init__(
+        self, 
+        z_dim, 
+        hidden_dim, 
+        num_attention_heads, 
+        n_attention_layers, 
+        n_linear_layers, 
+        dropout_rate, 
+        device, 
+        use_res, 
+        use_fed, 
+        use_VIB=False, 
+        use_cross_attention=False, 
+        use_dr3=False
+    ):
+        super(BidirectionalAttentionMixnet, self).__init__()
         self.use_res = use_res
         self.use_VIB = use_VIB
-        super(BidirectionalAttentionMixnet, self).__init__()
         self.attention_layers = nn.ModuleList()
         self.linear_layers = nn.ModuleList()
         self.use_cross_attention = use_cross_attention
+        self.use_dr3 = use_dr3
         
         if use_cross_attention:
             for _ in range(n_attention_layers):
@@ -263,6 +278,8 @@ class BidirectionalAttentionMixnet(nn.Module):
             normal_dist = dist.Normal(mu, std)
             combined_output = normal_dist.rsample()
             return self.output(combined_output), mu, std
+        if self.use_dr3:
+            return self.output(combined_output), combined_output
         return self.output(combined_output)
     
     
@@ -359,7 +376,8 @@ class MixNetRepresentation(torch.nn.Module):
         use_VIB: bool,
         use_2branch: bool,
         use_cross_attention: bool,
-        use_dual: bool
+        use_dual: bool,
+        use_dr3: bool
     ):
         super().__init__()
         
@@ -472,7 +490,8 @@ class MixNetRepresentation(torch.nn.Module):
                     use_res=use_res,
                     use_fed=use_fed,
                     use_VIB=use_VIB,
-                    use_cross_attention=use_cross_attention
+                    use_cross_attention=use_cross_attention,
+                    use_dr3=use_dr3
                 )
                 
                 self.operator_target = BidirectionalAttentionMixnet(
@@ -486,7 +505,8 @@ class MixNetRepresentation(torch.nn.Module):
                     use_res=use_res,
                     use_fed=use_fed,
                     use_VIB=use_VIB,
-                    use_cross_attention=use_cross_attention
+                    use_cross_attention=use_cross_attention,
+                    use_dr3=use_dr3
                 )
         self.backward_representation = BackwardRepresentation(
             observation_length=observation_length,
