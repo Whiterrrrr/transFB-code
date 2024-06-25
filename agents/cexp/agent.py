@@ -521,6 +521,7 @@ class CEXP(AbstractAgent):
                 "train/next_Q": next_Q.mean().item(),
                 "train/Q": Q.mean().item(),
                 "train/implicit_reward": implicit_reward.mean().item(),
+                "train/dr3_implict_reg": dr3_implict_reg.item(),
             }
         else: 
             metrics = {
@@ -537,6 +538,7 @@ class CEXP(AbstractAgent):
                 "train/B": B_next.mean().item(),
                 "train/B_norm1": torch.mean(torch.norm(B_next, p=1, dim=1)).item(),
                 "train/B_var": B_next.var(dim=1).mean().item(),
+                "train/dr3_implict_reg": dr3_implict_reg.item(),
             }
 
         return total_loss, metrics, \
