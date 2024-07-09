@@ -4,15 +4,17 @@ from typing import Tuple, Dict, Optional
 
 import torch
 import torch.nn.functional as F
-from torch.distributions import Normal, kl_divergence
+import torch.nn as nn
 import numpy as np
-
+from copy import deepcopy
 from agents.cexp.module import MixNetRepresentation
 from agents.fb.models import ActorModel
 from agents.fb.base import BCQ_actor, VAE
 from agents.base import AbstractAgent, Batch, AbstractGaussianActor
 from agents.utils import schedule
 
+from module import weight_init
+from collections import defaultdict
 
 class CEXP(AbstractAgent):
 
@@ -76,12 +78,14 @@ class CEXP(AbstractAgent):
         use_VIB,
         use_dual: bool,
         use_cross_attention: bool,
+        use_dormant: bool,
         use_2branch: bool = False,
         use_dr3: bool = False,
         dr3_coefficient: float = 1,
         lagrange: bool = False,
         use_icm: bool = False,
         M_pealty_coefficient: float = 1.0,
+        reset_interval: int = 1000
     ):
         super().__init__(
             observation_length=observation_length,
@@ -157,8 +161,8 @@ class CEXP(AbstractAgent):
         self.Operate.backward_representation_target.load_state_dict(
             self.Operate.backward_representation.state_dict()
         )
-        self.Operate.operator.load_state_dict(
-            self.Operate.operator_target.state_dict()
+        self.Operate.operator_target.load_state_dict(
+            self.Operate.operator.state_dict()
         )
         # total_action_samples must be divisible by 4
         assert (ood_action_weight % 0.25 == 0) & (
@@ -187,6 +191,8 @@ class CEXP(AbstractAgent):
         self.use_cross_attention = use_cross_attention
         self.use_dr3 = use_dr3
         self.dr3_coefficient = dr3_coefficient
+        self.reset_interval = reset_interval
+        self.use_dormant = use_dormant
         
         # optimisers
         self.Operate_optimizer = torch.optim.AdamW(
@@ -272,7 +278,7 @@ class CEXP(AbstractAgent):
         actor_zs = zs.clone().requires_grad_(True)
         actor_observations = batch.observations.clone().requires_grad_(True)
         
-        operate_metrics = self.update_operate(
+        operate_metrics, dormant_indices = self.update_operate(
             observations=batch.observations,
             observations_rand=batch.other_observations,
             next_observations=batch.next_observations,
@@ -282,10 +288,31 @@ class CEXP(AbstractAgent):
             step=step,
         )
         
-        actor_metrics = self.update_actor(
+        actor_metrics, actor_dormant_indices = self.update_actor(
             observation=actor_observations, z=actor_zs, step=step
         )
 
+        if self.use_dormant and step % self.reset_interval == 0 and step > 5000:
+            operater_dormant_metrics = cal_dormant_grad(self.Operate, type='critic', percentage=0.05)
+            actor_dormant_metrics = cal_dormant_grad(self.actor, type='actor', percentage=0.025)
+
+            # dormant_metrics.update(grad_metrics)
+            
+            operater_dormant_metrics["factor"] = perturb_factor(operater_dormant_metrics['critic_grad_dormant_ratio']) if operater_dormant_metrics else 1
+            actor_dormant_metrics["factor"] = perturb_factor(actor_dormant_metrics['actor_grad_dormant_ratio']) if actor_dormant_metrics else 1
+
+            if operater_dormant_metrics["factor"] < 1: 
+                self.Operate.forward_representation, self.Operate_optimizer = dormant_perturb(self.Operate.forward_representation, self.Operate_optimizer, dormant_indices['forward_representation'], operater_dormant_metrics["factor"])
+                self.Operate.backward_representation, self.Operate_optimizer = dormant_perturb(self.Operate.backward_representation, self.Operate_optimizer, dormant_indices['backward_representation'], operater_dormant_metrics["factor"])
+                self.Operate.operator, self.Operate_optimizer = dormant_perturb(self.Operate.operator, self.Operate_optimizer, dormant_indices['operator'], operater_dormant_metrics["factor"])
+                self.Operate.forward_representation_target, self.Operate_optimizer = dormant_perturb(self.Operate.forward_representation_target, self.Operate_optimizer, dormant_indices['forward_target'], operater_dormant_metrics["factor"])
+                self.Operate.backward_representation_target, self.Operate_optimizer = dormant_perturb(self.Operate.backward_representation_target, self.Operate_optimizer, dormant_indices['backward_target'], operater_dormant_metrics["factor"])
+                self.Operate.operator_target, self.Operate_optimizer = dormant_perturb(self.Operate.operator_target, self.Operate_optimizer, dormant_indices['operator_target'], operater_dormant_metrics["factor"])
+                self.Operate, self.Operate_optimizer = perturb(self.Operate, self.Operate_optimizer, operater_dormant_metrics["factor"])
+            if actor_dormant_metrics["factor"] < 1:
+                self.actor, self.actor_optimizer = dormant_perturb(self.actor, self.actor_optimizer, actor_dormant_indices, actor_dormant_metrics["factor"])
+                self.actor, self.actor_optimizer = perturb(self.actor, self.actor_optimizer, actor_dormant_metrics["factor"])
+                
         self.soft_update_params(
             network=self.Operate.forward_representation,
             target_network=self.Operate.forward_representation_target,
@@ -301,11 +328,19 @@ class CEXP(AbstractAgent):
             target_network=self.Operate.operator_target,
             tau=self._tau,
         )
-
-        metrics = {
-            **operate_metrics,
-            **actor_metrics,
-        }
+        
+        if self.use_dormant and step % self.reset_interval == 0 and step > 5000:
+            metrics = {
+                **operate_metrics,
+                **actor_metrics,
+                **operater_dormant_metrics,
+                **actor_dormant_metrics
+            }
+        else:
+            metrics = {
+                **operate_metrics,
+                **actor_metrics,
+            }
 
         return metrics
 
@@ -320,7 +355,7 @@ class CEXP(AbstractAgent):
         step: int,
     ) -> Dict[str, float]:
 
-        total_loss, metrics, F1, F2, B_next, B_rand, _, _, _, _, actor_std_dev = self._update_operate_inner(
+        total_loss, metrics, F1, F2, B_next, B_rand, _, _, _, _, actor_std_dev, dormant_indices = self._update_operate_inner(
             observations, observations_rand ,actions, next_observations, discounts, zs, step
         )
            
@@ -363,7 +398,7 @@ class CEXP(AbstractAgent):
                 "train/forward_backward_total_loss": total_loss,
             }
             
-        return metrics
+        return metrics, dormant_indices
 
     def _update_operate_inner(
         self,
@@ -406,7 +441,7 @@ class CEXP(AbstractAgent):
         F1, F2 = self.Operate.forward_representation(observations, actions, zs)
         B = self.Operate.backward_representation(torch.cat((next_observations, observations_rand), dim=0))
         B_next, B_rand = B[:next_observations.size(0)], B[next_observations.size(0):]
-
+        
         if not self.use_VIB:
             if not self.use_dr3:
                 M_next = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((B_next, B_next), dim=0)).squeeze()
@@ -429,7 +464,24 @@ class CEXP(AbstractAgent):
                 M_next, M_rand, M_next_feature, M_rand_feature = M_next.squeeze(), M_rand.squeeze(), M_next_feature.squeeze(), M_rand_feature.squeeze()
             M1_next, M2_next = M_next[:B_next.size(0)],  M_next[B_next.size(0):]
             M1_rand, M2_rand = M_rand[:B_rand.size(0)], M_rand[B_rand.size(0):]
-
+            
+        dormant_indices = None
+        if self.use_dormant and step % self.reset_interval == 0 and step > 5000:
+            _, forward_representation_dormant_indices, _ = cal_dormant_ratio(self.Operate.forward_representation, observations, actions, zs, type='forward_representation', percentage=0.1)
+            _, backward_representation_dormant_indices, _ = cal_dormant_ratio(self.Operate.backward_representation, observations_rand, type='backward_representation', percentage=0.1)
+            _, operator_dormant_indices, _ = cal_dormant_ratio(self.Operate.operator, F1, B_next, type='operator', percentage=0.1)
+            _, forward_target_dormant_indices, _ = cal_dormant_ratio(self.Operate.forward_representation_target, next_observations, next_actions, zs, type='forward_target', percentage=0.1)
+            _, backward_target_dormant_indices, _ = cal_dormant_ratio(self.Operate.backward_representation_target, observations_rand, type='backward_target', percentage=0.1)
+            _, operator_target_dormant_indices, _ = cal_dormant_ratio(self.Operate.operator_target, target_F1, target_B, type='operator_target', percentage=0.1)
+            dormant_indices = {
+                "forward_representation": forward_representation_dormant_indices,
+                "backward_representation": backward_representation_dormant_indices,
+                "operator": operator_dormant_indices,
+                "forward_target": forward_target_dormant_indices,
+                "backward_target": backward_target_dormant_indices,
+                "operator_target": operator_target_dormant_indices
+            }
+            
         fb_off_diag_loss = 0.5 * sum(
             (M - discounts.repeat(int(B_rand.shape[0] // F1.shape[0]), 1) * target_M).pow(2).mean()
             for M in [M1_rand, M2_rand]
@@ -542,7 +594,7 @@ class CEXP(AbstractAgent):
             }
 
         return total_loss, metrics, \
-               F1, F2, B_next, B_rand, M1_next, M2_next, target_B, off_diagonal, actor_std_dev
+               F1, F2, B_next, B_rand, M1_next, M2_next, target_B, off_diagonal, actor_std_dev, dormant_indices
 
     def update_actor(
         self, observation: torch.Tensor, z: torch.Tensor, step: int
@@ -550,6 +602,8 @@ class CEXP(AbstractAgent):
 
         std = schedule(self.std_dev_schedule, step)
         action, action_dist = self.actor(observation, z, std, sample=True)
+        if self.use_dormant and step % self.reset_interval == 0 and step > 5000:
+            _, actor_dormant_indices, _ = cal_dormant_ratio(self.actor, (observation, z), type='actor', percentage=0.1)
 
         # with torch.no_grad():
         F1, F2 = self.Operate.forward_representation(
@@ -597,7 +651,7 @@ class CEXP(AbstractAgent):
             "train/actor_log_prob": mean_log_prob,
         }
 
-        return metrics
+        return metrics, actor_dormant_indices
 
     def load(self, filepath: Path):
         """Loads model."""
@@ -832,3 +886,112 @@ class CEXP(AbstractAgent):
         }
 
         return alpha, metrics
+    
+    
+def perturb(net, optimizer, perturb_factor):
+    linear_keys = [name for name, mod in net.named_modules() if isinstance(mod, torch.nn.Linear)]
+    new_net = deepcopy(net)
+    new_net.apply(weight_init)
+
+    for name, param in net.named_parameters():
+        if any(key in name for key in linear_keys):
+            noise = new_net.state_dict()[name] * (1 - perturb_factor)
+            param.data = param.data * perturb_factor + noise
+        else:
+            param.data = net.state_dict()[name]
+    optimizer.state = defaultdict(dict)
+    return net, optimizer
+
+    
+def cal_dormant_grad(model, type = 'critic', percentage=0.025):
+    metrics = dict()
+    total_neurons = 0
+    dormant_neurons = 0
+    
+    count = 0
+    for module in (module for module in model.modules() if isinstance(module, nn.Linear) and module.weight.grad is not None):
+        grad_norm = module.weight.grad.norm(dim=1)  
+        avg_grad_norm = grad_norm.mean()
+        dormant_indice = (grad_norm < avg_grad_norm * percentage).nonzero(as_tuple=True)[0]
+        total_neurons += module.weight.shape[0]
+        dormant_neurons += len(dormant_indice)
+        module_dormant_grad = len(dormant_indice) / module.weight.shape[0]
+        metrics[type + '_' + str(count) + '_grad_dormant'] = module_dormant_grad
+        count += 1
+    metrics[type + "_grad_dormant_ratio"] = dormant_neurons / total_neurons
+    return metrics
+
+
+def perturb_factor(dormant_ratio, max_perturb_factor=0.9, min_perturb_factor=0.2):
+    return min(max(min_perturb_factor, 1 - dormant_ratio), max_perturb_factor)
+
+
+def cal_dormant_ratio(model, *inputs, type='policy', percentage=0.1):
+    metrics = dict()
+    hooks = []
+    hook_handlers = []
+    total_neurons = 0
+    dormant_neurons = 0
+    dormant_indices = dict()
+    active_indices = dict()
+
+    for _, module in model.named_modules():
+        if isinstance(module, nn.Linear):
+            hook = LinearOutputHook()
+            hooks.append(hook)
+            hook_handlers.append(module.register_forward_hook(hook))
+
+    with torch.no_grad():
+        model(*inputs)
+
+    count = 0
+    for module, hook in zip((module for module in model.modules() if isinstance(module, nn.Linear)), hooks):
+        with torch.no_grad():
+            for output_data in hook.outputs:
+                mean_output = output_data.abs().mean(0)
+                avg_neuron_output = mean_output.mean()
+                dormant_indice = (mean_output < avg_neuron_output *
+                                   percentage).nonzero(as_tuple=True)[0]
+                all_indice = list(range(module.weight.shape[0]))
+                active_indice = [index for index in all_indice if index not in dormant_indice]
+                total_neurons += module.weight.shape[0]
+                dormant_neurons += len(dormant_indice)
+                module_dormant_ratio = len(dormant_indices) / module.weight.shape[0]
+                if module_dormant_ratio > 0.1:
+                    dormant_indices[str(count)] = dormant_indice
+                    active_indices[str(count)] = active_indice
+                count += 1
+
+    for hook in hooks:
+        hook.outputs.clear()
+
+    for hook_handler in hook_handlers:
+        hook_handler.remove()
+
+    metrics[type + "_output_dormant_ratio"] = dormant_neurons / total_neurons
+
+    return metrics, dormant_indices, active_indices
+
+class LinearOutputHook:
+    def __init__(self):
+        self.outputs = []
+    def __call__(self, module, module_in, module_out):
+        self.outputs.append(module_out)
+        
+        
+def dormant_perturb(model, optimizer, dormant_indices, perturb_factor=0.2):
+    random_model = deepcopy(model)
+    random_model.apply(weight_init)
+    linear_layers = [module for module in model.modules() if isinstance(module, nn.Linear)]
+    random_layers = [module for module in random_model.modules() if isinstance(module, nn.Linear)]
+
+    for key in dormant_indices:
+        perturb_layer = linear_layers[key]
+        random_layer = random_layers[key]
+        with torch.no_grad():
+            for index in dormant_indices[key]:
+                noise = (random_layer.weight[index, :] * (1 - perturb_factor)).clone()
+                perturb_layer.weight[index, :] = perturb_layer.weight[index, :] * perturb_factor + noise
+
+    optimizer.state = defaultdict(dict)
+    return model, optimizer

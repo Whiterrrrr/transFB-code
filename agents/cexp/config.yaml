@@ -40,6 +40,8 @@ use_cross_attention: true
 use_dual: false
 use_dr3: true
 use_m_cons: false
+use_dormant: false
+reset_interval: 1000
 
 q_coefficient: 1
 M_pealty_coefficient: 1

@@ -496,6 +496,8 @@ elif config["algorithm"] == "cexp":
         use_dual=config['use_dual'],
         use_dr3=config['use_dr3'],
         dr3_coefficient=config['dr3_coefficient'],
+        reset_interval=config['reset_interval'],
+        use_dormant=config['use_dormant'],
     )
     
     replay_buffer = FBReplayBuffer(
