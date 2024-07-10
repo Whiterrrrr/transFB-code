@@ -209,7 +209,8 @@ class BidirectionalAttentionMixnet(nn.Module):
         use_fed, 
         use_VIB=False, 
         use_cross_attention=False, 
-        use_dr3=False
+        use_dr3=False,
+        use_feature_norm=False
     ):
         super(BidirectionalAttentionMixnet, self).__init__()
         self.use_res = use_res
@@ -218,6 +219,7 @@ class BidirectionalAttentionMixnet(nn.Module):
         self.linear_layers = nn.ModuleList()
         self.use_cross_attention = use_cross_attention
         self.use_dr3 = use_dr3
+        self.use_feature_norm=use_feature_norm
         
         if use_cross_attention:
             for _ in range(n_attention_layers):
@@ -278,15 +280,18 @@ class BidirectionalAttentionMixnet(nn.Module):
             normal_dist = dist.Normal(mu, std)
             combined_output = normal_dist.rsample()
             return self.output(combined_output), mu, std
+        if self.use_feature_norm:
+            combined_output = combined_output / combined_output.norm(p=2, dim=1, keepdim=True)
         if self.use_dr3:
             return self.output(combined_output), combined_output
         return self.output(combined_output)
     
     
 class Dual_BidirectionalAttentionMixnet(nn.Module):
-    def __init__(self, action_len, z_dim, hidden_dim, n_attention_layers, n_linear_layers, dropout_rate, device, use_res, use_fed):
+    def __init__(self, action_len, z_dim, hidden_dim, n_attention_layers, n_linear_layers, dropout_rate, device, use_res, use_fed, use_feature_norm):
         super(Dual_BidirectionalAttentionMixnet, self).__init__()
         self.use_res = use_res
+        self.use_feature_norm=use_feature_norm
         self.attention_layers = nn.ModuleList()
         self.linear_layers = nn.ModuleList()
         self.state_branch = nn.ModuleList()
@@ -330,6 +335,8 @@ class Dual_BidirectionalAttentionMixnet(nn.Module):
         combined_output = torch.cat((combined[:, 0, :], combined[:, 1, :]), dim=-1)
         for layer in self.linear_layers:
             combined_output = layer(combined_output)
+        if self.use_feature_norm:
+            combined_output = combined_output / combined_output.norm(p=2, dim=1, keepdim=True)
         for layer in self.state_branch:
             v = layer(combined_output)
         adv = self.adv_branch[0](torch.cat([combined_output, action], dim=-1))
@@ -377,7 +384,8 @@ class MixNetRepresentation(torch.nn.Module):
         use_2branch: bool,
         use_cross_attention: bool,
         use_dual: bool,
-        use_dr3: bool
+        use_dr3: bool,
+        use_feature_norm: bool
     ):
         super().__init__()
         
@@ -417,7 +425,8 @@ class MixNetRepresentation(torch.nn.Module):
                 dropout_rate=dropout_rate,
                 device=device,
                 use_res=use_res,
-                use_fed=use_fed
+                use_fed=use_fed,
+                use_feature_norm=use_feature_norm
             )
             self.operator_target = Dual_BidirectionalAttentionMixnet(
                 action_len=action_length,
@@ -428,7 +437,8 @@ class MixNetRepresentation(torch.nn.Module):
                 dropout_rate=dropout_rate,
                 device=device,
                 use_res=use_res,
-                use_fed=use_fed
+                use_fed=use_fed,
+                use_feature_norm=use_feature_norm
             )
         else:
             self.forward_representation = ForwardRepresentation(
@@ -491,7 +501,8 @@ class MixNetRepresentation(torch.nn.Module):
                     use_fed=use_fed,
                     use_VIB=use_VIB,
                     use_cross_attention=use_cross_attention,
-                    use_dr3=use_dr3
+                    use_dr3=use_dr3,
+                    use_feature_norm=use_feature_norm
                 )
                 
                 self.operator_target = BidirectionalAttentionMixnet(
@@ -506,7 +517,8 @@ class MixNetRepresentation(torch.nn.Module):
                     use_fed=use_fed,
                     use_VIB=use_VIB,
                     use_cross_attention=use_cross_attention,
-                    use_dr3=use_dr3
+                    use_dr3=use_dr3,
+                    use_feature_norm=use_feature_norm
                 )
         self.backward_representation = BackwardRepresentation(
             observation_length=observation_length,

@@ -7,13 +7,11 @@ import torch.nn.functional as F
 import torch.nn as nn
 import numpy as np
 from copy import deepcopy
-from agents.cexp.module import MixNetRepresentation
+from agents.cexp.module import MixNetRepresentation, weight_init
 from agents.fb.models import ActorModel
 from agents.fb.base import BCQ_actor, VAE
 from agents.base import AbstractAgent, Batch, AbstractGaussianActor
 from agents.utils import schedule
-
-from module import weight_init
 from collections import defaultdict
 
 class CEXP(AbstractAgent):
@@ -82,6 +80,7 @@ class CEXP(AbstractAgent):
         use_2branch: bool = False,
         use_dr3: bool = False,
         dr3_coefficient: float = 1,
+        use_feature_norm: bool = False,
         lagrange: bool = False,
         use_icm: bool = False,
         M_pealty_coefficient: float = 1.0,
@@ -131,7 +130,8 @@ class CEXP(AbstractAgent):
             use_2branch=use_2branch, 
             use_cross_attention=use_cross_attention,
             use_dual=use_dual,
-            use_dr3=use_dr3
+            use_dr3=use_dr3,
+            use_feature_norm=use_feature_norm
         )
 
         self.actor = ActorModel(
@@ -602,6 +602,7 @@ class CEXP(AbstractAgent):
 
         std = schedule(self.std_dev_schedule, step)
         action, action_dist = self.actor(observation, z, std, sample=True)
+        actor_dormant_indices=None
         if self.use_dormant and step % self.reset_interval == 0 and step > 5000:
             _, actor_dormant_indices, _ = cal_dormant_ratio(self.actor, (observation, z), type='actor', percentage=0.1)
 

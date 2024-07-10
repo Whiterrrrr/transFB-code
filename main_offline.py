@@ -498,6 +498,7 @@ elif config["algorithm"] == "cexp":
         dr3_coefficient=config['dr3_coefficient'],
         reset_interval=config['reset_interval'],
         use_dormant=config['use_dormant'],
+        use_feature_norm=config['use_feature_norm'],
     )
     
     replay_buffer = FBReplayBuffer(
