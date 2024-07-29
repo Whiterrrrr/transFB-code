@@ -621,6 +621,7 @@ workspace = OfflineRLWorkspace(
     eval_std=eval_std,
     wandb_logging=config["wandb_logging"],
     device=config["device"],
+    project=config["project"],
 )
 
 if __name__ == "__main__":
