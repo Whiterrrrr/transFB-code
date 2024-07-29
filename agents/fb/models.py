@@ -1,5 +1,3 @@
-"""Module for fully defined models used by the forward-backward agent. """
-
 from agents.fb.base import (
     ForwardModel,
     BackwardModel,
@@ -7,11 +5,116 @@ from agents.fb.base import (
     AbstractPreprocessor,
 )
 from typing import Tuple
-
 import torch
+from torch import nn
 
+class FC_block(nn.Module):
+    def __init__(self, in_dim, out_dim):
+        super(FC_block, self).__init__()
+        self.fc = nn.Linear(in_dim, out_dim)
+        self.activation = nn.LeakyReLU()
+        self.layernorm = nn.LayerNorm(out_dim)
 
-class ForwardRepresentation(torch.nn.Module):
+    def forward(self, x):
+        return self.layernorm(self.activation(self.fc(x)))
+
+class OFEModel(torch.nn.Module):
+    
+    def __init__(
+        self,
+        observation_z_length: int,
+        action_length: int,
+        z_dimension: int,
+        hidden_dimension: int,
+        phi_o_hidden_layers: int,
+        phi_ao_hidden_layers: int,
+        device: torch.device,
+    ):
+        super().__init__()
+        
+        self.phi_o = nn.ModuleList()
+        self.phi_ao = nn.ModuleList()
+        self.phi_o.append(FC_block(observation_z_length, hidden_dimension).to(device))
+        self.phi_o.append(FC_block(observation_z_length+hidden_dimension, hidden_dimension).to(device))
+        self.phi_ao.append(FC_block(action_length+hidden_dimension, hidden_dimension).to(device))
+        self.phi_ao.append(FC_block(action_length+2*hidden_dimension, hidden_dimension).to(device))
+        for i in range(phi_o_hidden_layers-2):
+            self.phi_o.append(FC_block(2*hidden_dimension, hidden_dimension).to(device))
+        for i in range(phi_ao_hidden_layers-1):
+            self.phi_ao.append(FC_block(2*hidden_dimension, hidden_dimension).to(device))
+        self.phi_ao.append(FC_block(2*hidden_dimension, z_dimension).to(device))
+        
+    def forward(self, observation_z: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        o_begin = observation_z
+        combined_output = o_begin
+        for layer in self.phi_o:
+            output = layer(combined_output)
+            combined_output = torch.cat([o_begin, output], dim=-1)
+            o_begin = output
+    
+        oa_begin = torch.cat([action, output], dim=-1)
+        combined_output = oa_begin
+        for layer in self.phi_ao:
+            output = layer(combined_output)
+            combined_output = torch.cat([oa_begin, output], dim=-1)
+            oa_begin = output
+
+        return output
+        
+        
+class ORERepresentation(nn.Module):
+    
+    def __init__(
+        self,
+        observation_length: int,
+        action_length: int,
+        z_dimension: int,
+        preprocessor_hidden_dimension: int,
+        preprocessor_feature_space_dimension: int,
+        hidden_dimension: int,
+        preprocessor_hidden_layers: int,
+        phi_o_hidden_layers: int,
+        phi_ao_hidden_layers: int,
+        preprocessor_activation: str,
+        device: torch.device,
+    ):
+        super().__init__()
+
+        self.obs_z_preprocessor = AbstractPreprocessor(
+            observation_length=observation_length,
+            concatenated_variable_length=z_dimension,
+            hidden_dimension=preprocessor_hidden_dimension,
+            feature_space_dimension=preprocessor_feature_space_dimension,
+            hidden_layers=preprocessor_hidden_layers,
+            device=device,
+            activation=preprocessor_activation,
+        )
+        
+        self.OFE1 = OFEModel(
+            observation_z_length=preprocessor_feature_space_dimension,
+            action_length=action_length,
+            z_dimension=z_dimension,
+            hidden_dimension=hidden_dimension,
+            phi_o_hidden_layers=phi_o_hidden_layers,
+            phi_ao_hidden_layers=phi_ao_hidden_layers,
+            device=device,
+        )
+        self.OFE2 = OFEModel(
+            observation_z_length=preprocessor_feature_space_dimension,
+            action_length=action_length,
+            z_dimension=z_dimension,
+            hidden_dimension=hidden_dimension,
+            phi_o_hidden_layers=phi_o_hidden_layers,
+            phi_ao_hidden_layers=phi_ao_hidden_layers,
+            device=device,
+        )
+        
+    def forward(self, observation: torch.Tensor, action: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+        observation_z = self.obs_z_preprocessor(torch.cat([observation, z], dim=-1))
+        return self.OFE1(observation_z, action), self.OFE2(observation_z, action)
+    
+    
+class ForwardRepresentation(nn.Module):
 
     def __init__(
         self,
@@ -27,7 +130,7 @@ class ForwardRepresentation(torch.nn.Module):
         forward_hidden_layers: int,
         device: torch.device,
         forward_activation: str,
-        use_2branch = False
+        use_2branch = False,
     ):
         super().__init__()
         self.use_2branch = use_2branch
@@ -92,7 +195,6 @@ class ForwardRepresentation(torch.nn.Module):
             torch.cat([observation, action], dim=-1)
         )
         obs_z_embedding = self.obs_z_preprocessor(torch.cat([observation, z], dim=-1))
-
         h = torch.cat([obs_action_embedding, obs_z_embedding], dim=-1)
         if self.use_2branch:
             scale = self.scale_branch(h)
