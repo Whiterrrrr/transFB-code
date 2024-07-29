@@ -24,7 +24,7 @@ from agents.sac.replay_buffer import SoftActorCriticReplayBuffer
 
 from agents.cql.agent import CQL
 from agents.base import OfflineReplayBuffer
-
+from agents.ifb.agent import IFB
 from agents.cfb.agent import CFB
 from agents.calfb.agent import CalFB
 from agents.cexp.agent import CEXP
@@ -259,7 +259,7 @@ class OfflineRLWorkspace(AbstractWorkspace):
         best_model_path = None
 
         # sample set transitions for z inference
-        if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, EXP):
+        if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, EXP) or isinstance(agent, IFB):
             if self.domain_name == "point_mass_maze":
                 self.goal_states = {}
                 for task, goal_state in point_mass_maze_goals.items():
@@ -334,7 +334,7 @@ class OfflineRLWorkspace(AbstractWorkspace):
             metrics: dict of metrics
         """
 
-        if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, EXP):
+        if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, EXP) or isinstance(agent, IFB):
             zs = {}
             metrics = {}
             if self.domain_name == "point_mass_maze":
@@ -358,7 +358,7 @@ class OfflineRLWorkspace(AbstractWorkspace):
 
                 timestep = self.env.reset()
                 while not timestep.last():
-                    if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, EXP):
+                    if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, EXP) or isinstance(agent, IFB):
                         action, _ = agent.act(
                             timestep.observation["observations"],
                             task=zs[task],
@@ -388,7 +388,7 @@ class OfflineRLWorkspace(AbstractWorkspace):
         # log mean task performance
         metrics["eval/task_reward_iqm"] = mean_task_performance / len(tasks)
 
-        if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, EXP):
+        if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, EXP) or isinstance(agent, IFB):
             agent.std_dev_schedule = self.train_std
 
         return metrics

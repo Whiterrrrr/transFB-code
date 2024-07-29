@@ -243,9 +243,9 @@ class IFB(AbstractAgent):
         step: int,
     ):
         with torch.no_grad():
-            target_F1, target_F2 = self.FB.forward_representation_target(
-                observation=observations, action=actions, z=zs
-            )
+            # target_F1, target_F2 = self.FB.forward_representation_target(
+            #     observation=observations, action=actions, z=zs
+            # )
             target_K = self.FB.state_forward_representation_target(
                 observation=next_observations, z=zs
             )
@@ -255,18 +255,21 @@ class IFB(AbstractAgent):
             target_O = torch.einsum(
                 "sd, td -> st", target_K, target_B
             )  # [batch_size, batch_size]
-            target_M1 = torch.einsum("sd, td -> st", target_F1, target_B)
-            target_M2 = torch.einsum("sd, td -> st", target_F2, target_B)
-            target_M = torch.min(target_M1, target_M2)
+            # target_M1 = torch.einsum("sd, td -> st", target_F1, target_B)
+            # target_M2 = torch.einsum("sd, td -> st", target_F2, target_B)
+            # target_M = torch.min(target_M1, target_M2)
 
         # --- Forward-backward representation loss ---
         F1, F2 = self.FB.forward_representation(observations, actions, zs)
         K = self.FB.state_forward_representation(observations, zs)
+        with torch.no_grad():
+            Q1, Q2 = torch.einsum("sd, sd -> s", F1, zs), torch.einsum("sd, sd -> s", F2, zs)
+            Q = torch.min(Q1, Q2)
+        V = torch.einsum("sd, td -> st", K, zs)
         B_next = self.FB.backward_representation(next_observations)
 
         M1_next = torch.einsum("sd, td -> st", F1, B_next)
         M2_next = torch.einsum("sd, td -> st", F2, B_next)
-        O_next = torch.einsum("sd, td -> st", K, B_next)
 
         I = torch.eye(*M1_next.size(), device=self._device)  # next state = s_{t+1}
         off_diagonal = ~I.bool()  # future states =/= s_{t+1}
@@ -277,10 +280,9 @@ class IFB(AbstractAgent):
         )
 
         fb_diag_loss = -sum(M.diag().mean() for M in [M1_next, M2_next])
-
         fb_loss = fb_diag_loss + fb_off_diag_loss
          
-        adv = (target_M - O_next)[off_diagonal].flatten()
+        adv = Q - V
         v_loss = asymmetric_l2_loss(adv, self.iql_tau)
 
         # --- orthonormalisation loss ---
@@ -301,11 +303,17 @@ class IFB(AbstractAgent):
             "train/forward_backward_v_loss": v_loss,
             "train/ortho_diag_loss": ortho_loss_diag,
             "train/ortho_off_diag_loss": ortho_loss_off_diag,
-            "train/O": O_next.mean().item(),
-            "train/M": M1_next.mean().item(),
-            "train/F": F1.mean().item(),
+            "train/M1_next": M1_next.mean().item(),
+            "train/M2_next": M2_next.mean().item(),
+            "train/target_B": target_B.mean().item(),
+            "train/target_O": target_O.mean().item(),
+            "train/target_K": target_K.mean().item(),
+            "train/F1": F1.mean().item(),
+            "train/F2": F2.mean().item(),
             "train/K": K.mean().item(),
             "train/B": B_next.mean().item(),
+            "train/V": V.mean().item(),
+            "train/Q": Q.mean().item(),
         }
 
         return total_loss, metrics, \
