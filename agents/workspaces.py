@@ -26,12 +26,14 @@ from agents.cql.agent import CQL
 from agents.base import OfflineReplayBuffer
 
 from agents.cfb.agent import CFB
-from agents.ifb.agent import IFB
 from agents.calfb.agent import CalFB
 from agents.cexp.agent import CEXP
-from agents.iexp.agent import IEXP
+from agents.exp.agent import EXP
 
 class OnlineRLWorkspace(AbstractWorkspace):
+    """
+    Trains/evals/rollouts online RL algorithm on one task
+    """
 
     def __init__(
         self,
@@ -62,7 +64,9 @@ class OnlineRLWorkspace(AbstractWorkspace):
         agent_config: Dict,
         replay_buffer: SoftActorCriticReplayBuffer,
     ):
-
+        """
+        Trains online RL algorithm on one task.
+        """
         if self.wandb_logging:
             run = wandb.init(
                 entity='1155173723',
@@ -163,7 +167,6 @@ class OnlineRLWorkspace(AbstractWorkspace):
         agent: SAC,
         task: str,
     ) -> Dict[str, float]:
-
         logger.info("Performing eval rollouts.")
         eval_rewards = []
         agent.eval()
@@ -188,6 +191,9 @@ class OnlineRLWorkspace(AbstractWorkspace):
 
 
 class OfflineRLWorkspace(AbstractWorkspace):
+    """
+    Trains/evals/rollouts an offline RL agent given
+    """
 
     def __init__(
         self,
@@ -201,6 +207,7 @@ class OfflineRLWorkspace(AbstractWorkspace):
         z_inference_steps: Optional[int] = None,  # FB only
         train_std: Optional[float] = None,  # FB only
         eval_std: Optional[float] = None,  # FB only
+        project: str = "zero-shot",
     ):
         super().__init__(
             env=reward_constructor._env,
@@ -219,22 +226,25 @@ class OfflineRLWorkspace(AbstractWorkspace):
         self.wandb_logging = wandb_logging
         self.domain_name = reward_constructor.domain_name
         self.device = device
+        self.project = project
 
     def train(
         self,
-        agent: Union[CQL, SAC, FB, CFB, CalFB, CEXP, IFB],
+        agent: Union[CQL, SAC, FB, CFB, CalFB, CEXP, EXP],
         tasks: List[str],
         agent_config: Dict,
         replay_buffer: Union[OfflineReplayBuffer, FBReplayBuffer],
     ) -> None:
-
+        """
+        Trains an offline RL algorithm on one task.
+        """
         if self.wandb_logging:
             run = wandb.init(
                 config=agent_config,
                 tags=[agent.name, "core"],
                 reinit=True,
                 entity='1155173723',
-                project="zero-shot", 
+                project=self.project,
                 name=agent.name,
             )
             model_path = Path(self.model_dir + '/' + run.name)
@@ -249,7 +259,7 @@ class OfflineRLWorkspace(AbstractWorkspace):
         best_model_path = None
 
         # sample set transitions for z inference
-        if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, IEXP) or isinstance(agent, IFB):
+        if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, EXP):
             if self.domain_name == "point_mass_maze":
                 self.goal_states = {}
                 for task, goal_state in point_mass_maze_goals.items():
@@ -267,8 +277,9 @@ class OfflineRLWorkspace(AbstractWorkspace):
         for i in tqdm(range(self.learning_steps + 1)):
 
             batch = replay_buffer.sample(agent.batch_size)
-            if isinstance(agent, CEXP) or isinstance(agent, IEXP):
-                train_metrics = agent.update(batch=batch, step=i)
+            if isinstance(agent, CEXP) or isinstance(agent, EXP):
+                batch_rand = replay_buffer.sample(agent.batch_size)
+                train_metrics = agent.update(batch=batch, batch_rand=batch_rand, step=i)
             else:
                 train_metrics = agent.update(batch=batch, step=i)
             
@@ -314,15 +325,26 @@ class OfflineRLWorkspace(AbstractWorkspace):
         agent: Union[CQL, SAC, FB, CFB, CalFB],
         tasks: List[str],
     ) -> Dict[str, float]:
+        """
+        Performs eval rollouts.
+        Args:
+            agent: agent to evaluate
+            tasks: tasks to evaluate on
+        Returns:
+            metrics: dict of metrics
+        """
 
-        if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, IEXP) or isinstance(agent, IFB):
+        if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, EXP):
             zs = {}
+            metrics = {}
             if self.domain_name == "point_mass_maze":
                 for task, goal_state in self.goal_states.items():
                     zs[task] = agent.infer_z(goal_state)
+                    metrics[f"train/{task}_infer_z"] = zs[task].mean().item()
             else:
                 for task, rewards in self.rewards_z.items():
                     zs[task] = agent.infer_z(self.observations_z, rewards)
+                    metrics[f"train/{task}_infer_z"] = zs[task].mean().item()
 
             agent.std_dev_schedule = self.eval_std
 
@@ -336,7 +358,7 @@ class OfflineRLWorkspace(AbstractWorkspace):
 
                 timestep = self.env.reset()
                 while not timestep.last():
-                    if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, IEXP) or isinstance(agent, IFB):
+                    if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, EXP):
                         action, _ = agent.act(
                             timestep.observation["observations"],
                             task=zs[task],
@@ -357,7 +379,6 @@ class OfflineRLWorkspace(AbstractWorkspace):
                 eval_rewards[task].append(task_rewards)
 
         # average over rollouts for metrics
-        metrics = {}
         mean_task_performance = 0.0
         for task, rewards in eval_rewards.items():
             mean_task_reward = stats.trim_mean(rewards, 0.25)  # IQM
@@ -367,13 +388,16 @@ class OfflineRLWorkspace(AbstractWorkspace):
         # log mean task performance
         metrics["eval/task_reward_iqm"] = mean_task_performance / len(tasks)
 
-        if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, IEXP) or isinstance(agent, IFB):
+        if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, EXP):
             agent.std_dev_schedule = self.train_std
 
         return metrics
 
 
 class FinetuningWorkspace(OfflineRLWorkspace):
+    """
+    Finetunes FB or CFB on one task.
+    """
 
     def __init__(
         self,
@@ -441,6 +465,14 @@ class FinetuningWorkspace(OfflineRLWorkspace):
         agent_config: Dict,
         replay_buffer: FBReplayBuffer,
     ) -> None:
+        """
+        Finetunes FB or CFB on one task offline, without online interaction.
+        Args:
+            agent: agent to finetune
+            task: task to finetune on
+            agent_config: agent config
+            replay_buffer: replay buffer for z sampling
+        """
 
         if self.wandb_logging:
             run = wandb.init(
@@ -568,6 +600,15 @@ class FinetuningWorkspace(OfflineRLWorkspace):
         replay_buffer: OnlineFBReplayBuffer,
         episodes: int,
     ) -> None:
+        """
+        Finetunes FB or CFB on one task using online data.
+        Args:
+            agent: agent to finetune
+            task: task to finetune on
+            agent_config: agent config
+            replay_buffer: replay buffer for z sampling
+            episodes: number of episodes to finetune for
+        """
 
         if self.wandb_logging:
             run = wandb.init(

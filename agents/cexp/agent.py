@@ -1,21 +1,18 @@
 import math
 from pathlib import Path
 from typing import Tuple, Dict, Optional
-
 import torch
 import torch.nn.functional as F
-import torch.nn as nn
 import numpy as np
-from copy import deepcopy
-from agents.cexp.module import MixNetRepresentation, weight_init
+from agents.cexp.module import MixNetRepresentation
 from agents.fb.models import ActorModel
-from agents.fb.base import BCQ_actor, VAE
 from agents.base import AbstractAgent, Batch, AbstractGaussianActor
+from agents.fb.base import FF_pred_model
 from agents.utils import schedule
-from collections import defaultdict
+from torch.optim.lr_scheduler import CosineAnnealingLR, CosineAnnealingWarmRestarts
+from agents.cexp.utils import perturb, cal_dormant_grad, perturb_factor, cal_dormant_ratio, dormant_perturb
 
 class CEXP(AbstractAgent):
-
     def __init__(
         self,
         observation_length: int,
@@ -73,19 +70,33 @@ class CEXP(AbstractAgent):
         name: str,
         use_q_loss,
         use_fed,
-        use_VIB,
-        use_dual: bool,
-        use_cross_attention: bool,
-        use_dormant: bool,
+        use_dr3,
+        dr3_coefficient = 1,
+        use_auxiliary: bool = False,
+        auxiliary_coefficient: float = 1, 
+        use_cross_attention = False,
+        use_distribution: bool = False,
         use_2branch: bool = False,
-        use_dr3: bool = False,
-        dr3_coefficient: float = 1,
-        use_feature_norm: bool = False,
         lagrange: bool = False,
         use_icm: bool = False,
         M_pealty_coefficient: float = 1.0,
-        reset_interval: int = 1000
+        update_freq=1,
+        reset_interval=1000,
+        use_feature_norm=False,
+        use_dormant=True,
+        use_OFE=True,
+        FF_pred_hidden_dimension: int = 256,
+        FF_pred_hidden_layers: int = 2,
+        FF_pred_activation: str = 'ReLU',
+        ensemble_size: int = 1,
+        num_atoms: int = 51,
+        minVal: int = 0,
+        maxVal: int = 500,
+        use_gamma_loss: bool = False,
+        use_film_cond: bool = False,
+        use_linear_res=False,
     ):
+        assert not (use_gamma_loss and use_distribution), 'use_gamma_loss and use_distribution cannot be True at the same time'
         super().__init__(
             observation_length=observation_length,
             action_length=action_length,
@@ -126,12 +137,16 @@ class CEXP(AbstractAgent):
             backward_preporcess_output_dim=backward_preprocess_output_dimension,
             use_res=use_res,
             use_fed=use_fed,
-            use_VIB=use_VIB,
-            use_2branch=use_2branch, 
-            use_cross_attention=use_cross_attention,
-            use_dual=use_dual,
+            use_2branch=use_2branch,
             use_dr3=use_dr3,
-            use_feature_norm=use_feature_norm
+            use_feature_norm=use_feature_norm,
+            use_OFE=use_OFE,
+            use_cross_attention=use_cross_attention,
+            use_distribution=use_distribution,
+            ensemble_size=ensemble_size,
+            num_atoms=num_atoms,
+            use_film_cond=use_film_cond,
+            use_linear_res=use_linear_res
         )
 
         self.actor = ActorModel(
@@ -154,7 +169,6 @@ class CEXP(AbstractAgent):
         self.encoder = torch.nn.Identity()
         self.augmentation = torch.nn.Identity()
 
-        # load weights into target networks
         self.Operate.forward_representation_target.load_state_dict(
             self.Operate.forward_representation.state_dict()
         )
@@ -178,6 +192,7 @@ class CEXP(AbstractAgent):
             == self.total_action_samples
         )
 
+        self.update_freq=update_freq
         self.use_cons = use_cons
         self.alpha = alpha
         self.target_conservative_penalty = target_conservative_penalty
@@ -185,15 +200,45 @@ class CEXP(AbstractAgent):
         self.use_icm = use_icm
         self.use_m_cons = use_m_cons
         self.M_pealty_coefficient = M_pealty_coefficient
-        self.use_VIB = use_VIB
         self.use_2branch = use_2branch
-        self.use_dual = use_dual
-        self.use_cross_attention = use_cross_attention
-        self.use_dr3 = use_dr3
-        self.dr3_coefficient = dr3_coefficient
+        self.use_dr3=use_dr3
+        self.dr3_coefficient=dr3_coefficient
         self.reset_interval = reset_interval
         self.use_dormant = use_dormant
+        self.use_auxiliary = use_auxiliary
+        self.auxiliary_coefficient = auxiliary_coefficient
+        self.use_distribution = use_distribution
+        self.use_cross_attention = use_cross_attention
+        self._device = device
+        self.batch_size = batch_size
+        self._z_mix_ratio = z_mix_ratio
+        self._tau = tau
+        self._z_dimension = z_dimension
+        self.std_dev_schedule = std_dev_schedule
+        self.q_coefficient = q_coefficient
+        self.lagrange = lagrange
+        self.minVal=minVal
+        self.maxVal=maxVal
+        self.num_atoms=num_atoms
+        self.support = torch.linspace(minVal, maxVal, num_atoms, device=device)
+        self.use_gamma_loss = use_gamma_loss
         
+        if self.use_auxiliary:
+            self.pred_model = FF_pred_model(
+                observation_length=observation_length,
+                z_dim=z_dimension,
+                hidden_dimension=FF_pred_hidden_dimension,
+                hidden_layers=FF_pred_hidden_layers,
+                activation=FF_pred_activation,
+                device=device,
+            )
+            self.auxiliary_optimizer = torch.optim.AdamW(
+                [
+                    {"params": self.pred_model.parameters()},
+                    {"params": self.Operate.forward_representation.parameters()},
+                ],
+                lr=critic_learning_rate,
+            )
         # optimisers
         self.Operate_optimizer = torch.optim.AdamW(
             [
@@ -209,27 +254,35 @@ class CEXP(AbstractAgent):
             ],
             lr=critic_learning_rate,
             weight_decay=0.03,
-            betas=(0.9, 0.999),
+            betas=(0.9, 0.99),
             amsgrad=False
         )
+        self.scheduler = CosineAnnealingWarmRestarts(self.Operate_optimizer, T_0=5, T_mult=2, eta_min=1e-5)
+        # self.FB_optimizer = torch.optim.AdamW(
+        #     [
+        #         {"params": self.Operate.forward_representation.parameters()},
+        #         {
+        #             "params": self.Operate.backward_representation.parameters(),
+        #             "lr": critic_learning_rate * b_learning_rate_coefficient,
+        #         },
+        #     ],
+        #     lr=critic_learning_rate,
+        #     # weight_decay=0.03,
+        #     # betas=(0.9, 0.9),
+        #     # amsgrad=False
+        # )
+        # self.mixnet_optimizer = torch.optim.AdamW(
+        #     self.Operate.operator.parameters(),
+        #     lr=critic_learning_rate,
+        #     # weight_decay=0.03,
+        #     # betas=(0.9, 0.9),
+        #     # amsgrad=False
+        # )
         self.actor_optimizer = torch.optim.AdamW(
             self.actor.parameters(), 
             lr=actor_learning_rate,
-            weight_decay=0.03,
-            betas=(0.9, 0.999),
-            amsgrad=False
         )
 
-        self._device = device
-        self.batch_size = batch_size
-        self._z_mix_ratio = z_mix_ratio
-        self._tau = tau
-        self._z_dimension = z_dimension
-        self.std_dev_schedule = std_dev_schedule
-        self.q_coefficient = q_coefficient
-
-        # lagrange multiplier
-        self.lagrange = lagrange
         self.critic_log_alpha = torch.zeros(1, requires_grad=True, device=self._device)
         self.critic_alpha_optimizer = torch.optim.AdamW(
             [self.critic_log_alpha], 
@@ -247,7 +300,7 @@ class CEXP(AbstractAgent):
         step: int,
         sample: bool = False,
     ) -> Tuple[np.array, float]:
-
+  
         observation = torch.as_tensor(
             observation, dtype=torch.float32, device=self._device
         ).unsqueeze(0)
@@ -260,8 +313,9 @@ class CEXP(AbstractAgent):
 
         return action.detach().cpu().numpy()[0], std_dev
 
-    def update(self, batch: Batch, step: int) -> Dict[str, float]:
-
+    def update(self, batch: Batch, batch_rand: Batch, step: int) -> Dict[str, float]:
+        mask = torch.rand(batch.observations.shape[0]) < 0.1
+        batch_rand.observations[mask] = batch.next_observations[mask]
         zs = self.sample_z(size=self.batch_size)
         perm = torch.randperm(self.batch_size)
         backward_input = batch.observations[perm]
@@ -280,24 +334,23 @@ class CEXP(AbstractAgent):
         
         operate_metrics, dormant_indices = self.update_operate(
             observations=batch.observations,
-            observations_rand=batch.other_observations,
+            observations_rand=batch_rand.observations,
             next_observations=batch.next_observations,
             actions=batch.actions,
             discounts=batch.discounts.squeeze(),
             zs=zs,
             step=step,
         )
-        
         actor_metrics, actor_dormant_indices = self.update_actor(
-            observation=actor_observations, z=actor_zs, step=step
+            observation=actor_observations, z=actor_zs, discounts=batch.discounts, step=step
         )
-
+        self.scheduler.step()
+        current_lr = self.scheduler.get_last_lr()[0]
         if self.use_dormant and step % self.reset_interval == 0 and step > 5000:
             operater_dormant_metrics = cal_dormant_grad(self.Operate, type='critic', percentage=0.05)
             actor_dormant_metrics = cal_dormant_grad(self.actor, type='actor', percentage=0.025)
 
             # dormant_metrics.update(grad_metrics)
-            
             operater_dormant_metrics["factor"] = perturb_factor(operater_dormant_metrics['critic_grad_dormant_ratio']) if operater_dormant_metrics else 1
             actor_dormant_metrics["factor"] = perturb_factor(actor_dormant_metrics['actor_grad_dormant_ratio']) if actor_dormant_metrics else 1
 
@@ -312,7 +365,7 @@ class CEXP(AbstractAgent):
             if actor_dormant_metrics["factor"] < 1:
                 self.actor, self.actor_optimizer = dormant_perturb(self.actor, self.actor_optimizer, actor_dormant_indices, actor_dormant_metrics["factor"])
                 self.actor, self.actor_optimizer = perturb(self.actor, self.actor_optimizer, actor_dormant_metrics["factor"])
-                
+
         self.soft_update_params(
             network=self.Operate.forward_representation,
             target_network=self.Operate.forward_representation_target,
@@ -328,7 +381,7 @@ class CEXP(AbstractAgent):
             target_network=self.Operate.operator_target,
             tau=self._tau,
         )
-        
+
         if self.use_dormant and step % self.reset_interval == 0 and step > 5000:
             metrics = {
                 **operate_metrics,
@@ -341,7 +394,7 @@ class CEXP(AbstractAgent):
                 **operate_metrics,
                 **actor_metrics,
             }
-
+        metrics['current_lr']=current_lr 
         return metrics
 
     def update_operate(
@@ -355,35 +408,60 @@ class CEXP(AbstractAgent):
         step: int,
     ) -> Dict[str, float]:
 
-        total_loss, metrics, F1, F2, B_next, B_rand, _, _, _, _, actor_std_dev, dormant_indices = self._update_operate_inner(
+        total_loss, metrics, F1, F2, B_next, B_rand, _, _, actor_std_dev, dormant_indices, auxiliary_loss = self._update_operate_inner(
             observations, observations_rand ,actions, next_observations, discounts, zs, step
         )
-           
         if self.use_cons:
             (conservative_penalty, conservative_metrics,) = self._value_conservative_penalty(
                 observations=observations,
                 next_observations=next_observations,
+                rand_observations=observations_rand[:observations.shape[0]],
                 zs=zs,
                 actor_std_dev=actor_std_dev,
                 F1=F1,
                 F2=F2,
+                discount=discounts,
+                B_next=B_next,
+                M_pealty_coefficient=self.M_pealty_coefficient
             )
 
-            # tune alpha from conservative penalty
             alpha, alpha_metrics = self._tune_alpha(
                 conservative_penalty=conservative_penalty
             )
             conservative_loss = alpha * conservative_penalty
             total_loss = total_loss + conservative_loss
-        
 
+        # if step%10!=0:
+        #     self.FB_optimizer.zero_grad(set_to_none=True)
+        #     total_loss.backward()
+        #     for param in self.Operate.parameters():
+        #         if param.grad is not None:
+        #             param.grad.data.clamp_(-1, 1)
+        #     self.FB_optimizer.step()
+        # else:
+        #     self.mixnet_optimizer.zero_grad(set_to_none=True)
+        #     total_loss.backward()
+        #     for param in self.Operate.parameters():
+        #         if param.grad is not None:
+        #             param.grad.data.clamp_(-1, 1)
+        #     self.mixnet_optimizer.step()
         self.Operate_optimizer.zero_grad(set_to_none=True)
-        total_loss.backward()
+        if self.use_auxiliary:
+            self.auxiliary_optimizer.zero_grad(set_to_none=True)
+        
+        total_loss.backward(retain_graph=True)
         for param in self.Operate.parameters():
             if param.grad is not None:
                 param.grad.data.clamp_(-1, 1)
+        if self.use_auxiliary:
+            auxiliary_loss.backward()
+            for param in self.pred_model.parameters():
+                if param.grad is not None:
+                    param.grad.data.clamp_(-1, 1)
+                
         self.Operate_optimizer.step()
-        
+        if self.use_auxiliary:
+            self.auxiliary_optimizer.step()
         
         if self.use_cons:
             metrics = {
@@ -397,7 +475,6 @@ class CEXP(AbstractAgent):
                 **metrics,
                 "train/forward_backward_total_loss": total_loss,
             }
-            
         return metrics, dormant_indices
 
     def _update_operate_inner(
@@ -410,7 +487,6 @@ class CEXP(AbstractAgent):
         zs: torch.Tensor,
         step: int,
     ):
-        #TODO: add the implementation for the dual network
         with torch.no_grad():
             actor_std_dev = schedule(self.std_dev_schedule, step)
             next_actions, _ = self.actor(
@@ -419,7 +495,38 @@ class CEXP(AbstractAgent):
 
             target_F1, target_F2 = self.Operate.forward_representation_target(observation=next_observations, z=zs, action=next_actions)
             target_B = self.Operate.backward_representation_target(observation=observations_rand)
-            if not self.use_VIB:
+            if self.use_distribution:
+                # u, std = self.Operate.operator_target(
+                #     torch.cat((
+                #         target_F1.repeat(int(target_B.shape[0] // target_F1.shape[0]), 1), 
+                #         target_F2.repeat(int(target_B.shape[0] // target_F2.shape[0]), 1)), dim=0), 
+                #     torch.cat((target_B, target_B), dim=0)
+                # )
+                # u, std = u.squeeze(), std.squeeze()
+                # u_target = torch.all(observations_rand == next_observations, dim=1).repeat(2) + discounts.squeeze().repeat(2) * u
+                # std_target = discounts.squeeze().repeat(2) * std
+                # target_distribution = torch.distributions.normal.Normal(u_target, std_target)
+                # target_M = target_distribution.sample()
+                # target_M = torch.min(target_M[:target_B.size(0)], target_M[target_B.size(0):])
+                # M_next = torch.zeros(1)
+                target_M_dist = self.Operate.operator_target(
+                    torch.cat((
+                        target_F1.repeat(int(target_B.shape[0] // target_F1.shape[0]), 1), 
+                        target_F2.repeat(int(target_B.shape[0] // target_F2.shape[0]), 1)), dim=0), 
+                    torch.cat((target_B, target_B), dim=0)
+                ).squeeze()
+                target_M1_dist, target_M2_dist = target_M_dist[:target_B.size(0)], target_M_dist[target_B.size(0):]
+                target_M_dist = torch.where(torch.sum(target_M1_dist * self.support, dim=1).unsqueeze(-1) <= torch.sum(target_M2_dist * self.support, dim=1).unsqueeze(-1), target_M1_dist, target_M2_dist)
+                target_M = torch.sum(target_M_dist * self.support, dim=1)
+                Tz = torch.all(observations_rand == next_observations, dim=1).unsqueeze(1) + discounts.unsqueeze(1) * self.support
+                Tz = Tz.clamp(min=self.minVal, max=self.maxVal)
+                b = (Tz - self.minVal) / (self.maxVal - self.minVal) * (self.num_atoms - 1)
+                l, u = b.floor().long(), b.ceil().long()
+                offset = torch.linspace(0, (b.size(0) - 1) * self.num_atoms, b.size(0), device=self._device).long().unsqueeze(1).expand(b.size(0), self.num_atoms)
+                proj_dist = torch.zeros(target_M_dist.size(), device=self._device)
+                proj_dist.view(-1).index_add_(0, (l + offset).view(-1), (target_M_dist * (u.float() - b)).view(-1))
+                proj_dist.view(-1).index_add_(0, (u + offset).view(-1), (target_M_dist * (b - l.float())).view(-1))
+            else:
                 if not self.use_dr3:
                     target_M = self.Operate.operator_target(
                         torch.cat((
@@ -436,13 +543,36 @@ class CEXP(AbstractAgent):
                     )
                     target_M, target_M_feature = target_M.squeeze(), target_M_feature.squeeze()
                 target_M = torch.min(target_M[:target_B.size(0)], target_M[target_B.size(0):])
-
-        # --- Forward-backward representation loss ---
+            
         F1, F2 = self.Operate.forward_representation(observations, actions, zs)
         B = self.Operate.backward_representation(torch.cat((next_observations, observations_rand), dim=0))
         B_next, B_rand = B[:next_observations.size(0)], B[next_observations.size(0):]
-        
-        if not self.use_VIB:
+
+        M_next = dr3_implict_reg = auxiliary_loss = fb_diag_loss = fb_off_diag_loss = torch.zeros(1, device=self._device)
+        if self.use_distribution:
+            # u, std = self.Operate.operator_target(
+            #     torch.cat((
+            #         F1.repeat(int(B_rand.shape[0] // F1.shape[0]), 1), 
+            #         F2.repeat(int(B_rand.shape[0] // F2.shape[0]), 1)), dim=0), 
+            #     torch.cat((B_rand, B_rand), dim=0)
+            # )
+            # u, std = u.squeeze(), std.squeeze()
+            # current_distribution = torch.distributions.normal.Normal(u, std)
+            # M_rand = current_distribution.sample()
+            # fb_loss = torch.distributions.kl.kl_divergence(current_distribution, target_distribution).mean()
+            # total_loss = fb_loss
+            M_rand_dist = self.Operate.operator(
+                torch.cat((
+                    F1.repeat(int(B_rand.shape[0] // F1.shape[0]), 1), 
+                    F2.repeat(int(B_rand.shape[0] // F2.shape[0]), 1)), dim=0), 
+                torch.cat((B_rand, B_rand), dim=0)
+            ).squeeze()
+            M1_rand_dist, M2_rand_dist = M_rand_dist[:B_rand.size(0)], M_rand_dist[B_rand.size(0):]
+            M_rand_dist = torch.where(torch.sum(M1_rand_dist * self.support, dim=1).unsqueeze(-1) <= torch.sum(M2_rand_dist * self.support, dim=1).unsqueeze(-1), M1_rand_dist, M2_rand_dist)
+            M_rand = torch.sum(M_rand_dist * self.support, dim=1)
+            fb_loss = -torch.sum(proj_dist * torch.log(M_rand_dist + 1e-8), dim=1).mean()
+            total_loss = fb_loss
+        else:
             if not self.use_dr3:
                 M_next = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((B_next, B_next), dim=0)).squeeze()
                 M_rand = self.Operate.operator(
@@ -451,7 +581,6 @@ class CEXP(AbstractAgent):
                         F2.repeat(int(B_rand.shape[0] // F2.shape[0]), 1)), dim=0), 
                     torch.cat((B_rand, B_rand), dim=0)
                 ).squeeze()
-                dr3_implict_reg=0
             else:
                 M_next, M_next_feature = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((B_next, B_next), dim=0))
                 M_rand, M_rand_feature = self.Operate.operator(
@@ -464,6 +593,22 @@ class CEXP(AbstractAgent):
                 M_next, M_rand, M_next_feature, M_rand_feature = M_next.squeeze(), M_rand.squeeze(), M_next_feature.squeeze(), M_rand_feature.squeeze()
             M1_next, M2_next = M_next[:B_next.size(0)],  M_next[B_next.size(0):]
             M1_rand, M2_rand = M_rand[:B_rand.size(0)], M_rand[B_rand.size(0):]
+            fb_off_diag_loss = 0.5 * sum(
+                (M - discounts.repeat(int(B_rand.shape[0] // F1.shape[0]), 1) * target_M).pow(2).mean()
+                for M in [M1_rand, M2_rand]
+            )
+
+            fb_diag_loss = -sum(M.mean() for M in [M1_next, M2_next])
+
+            fb_loss = fb_diag_loss + fb_off_diag_loss
+            total_loss = fb_loss + dr3_implict_reg * self.dr3_coefficient
+                
+        if self.use_auxiliary:
+            F1_clone, F2_clone = F1.clone(), F2.clone()
+            F1_clone.retain_grad()
+            F2_clone.retain_grad()
+            pred_next_observations1, pred_next_observations2 = self.pred_model(F1_clone, F2_clone, zs)
+            auxiliary_loss = (F.mse_loss(pred_next_observations1, next_observations) + F.mse_loss(pred_next_observations2, next_observations)) * self.auxiliary_coefficient
             
         dormant_indices = None
         if self.use_dormant and step % self.reset_interval == 0 and step > 5000:
@@ -481,20 +626,48 @@ class CEXP(AbstractAgent):
                 "backward_target": backward_target_dormant_indices,
                 "operator_target": operator_target_dormant_indices
             }
-            
-        fb_off_diag_loss = 0.5 * sum(
-            (M - discounts.repeat(int(B_rand.shape[0] // F1.shape[0]), 1) * target_M).pow(2).mean()
-            for M in [M1_rand, M2_rand]
-        )
-
-        fb_diag_loss = -sum(M.mean() for M in [M1_next, M2_next])
-
-        fb_loss = fb_diag_loss + fb_off_diag_loss
-        total_loss = fb_loss + dr3_implict_reg
-
+        
         if self.use_q_loss:
             with torch.no_grad():
-                if not self.use_VIB:
+                # if self.use_cross_attention:
+                #     B_pinv = torch.pinverse(B_next)
+                #     implicit_reward = torch.diag(torch.matmul(zs, B_pinv))
+                # else:
+                #     cov = torch.matmul(B_next.T, B_next) / B_next.shape[0]
+                #     inv_cov = torch.inverse(cov)
+                #     implicit_reward = (torch.matmul(B_next, inv_cov) * zs).sum(dim=1)  # batch_size
+                cov = torch.matmul(B_next.T, B_next) / B_next.shape[0]
+                inv_cov = torch.inverse(cov)
+                implicit_reward = (torch.matmul(B_next, inv_cov) * zs).sum(dim=1) 
+                    
+                if self.use_distribution:
+                    # next_u, next_std = self.Operate.operator_target(
+                    #     torch.cat((target_F1, target_F2), dim=0),
+                    #     torch.cat((zs, zs), dim=0)
+                    # )
+                    # next_u, next_std = next_u.squeeze(), next_std.squeeze()
+                    # target_u = implicit_reward.repeat(2) + discounts.squeeze().repeat(2) * next_u
+                    # target_std = discounts.squeeze().repeat(2) * next_std
+                    # target_distribution = torch.distributions.normal.Normal(target_u, target_std)
+                    # target_Q = target_distribution.sample()
+                    # target_Q = torch.min(target_Q[:zs.size(0)], target_Q[zs.size(0):])
+                    next_Q_dist = self.Operate.operator_target(
+                        torch.cat((target_F1, target_F2), dim=0), 
+                        torch.cat((zs, zs), dim=0)
+                    ).squeeze()
+                    next_Q1_dist, next_Q2_dist = next_Q_dist[:zs.size(0)], next_Q_dist[zs.size(0):]
+                    next_Q_dist = torch.where(torch.sum(next_Q1_dist * self.support, dim=1).unsqueeze(-1) <= torch.sum(next_Q2_dist * self.support, dim=1).unsqueeze(-1), next_Q1_dist, next_Q2_dist)
+                    target_Q = torch.sum(next_Q_dist * self.support, dim=1)
+                    Tz = implicit_reward.unsqueeze(1) + discounts.unsqueeze(1) * self.support
+                    Tz = Tz.clamp(min=self.minVal, max=self.maxVal)
+                    b = (Tz - self.minVal) / (self.maxVal - self.minVal) * (self.num_atoms - 1)
+                    l = b.floor().long()
+                    u = b.ceil().long()
+                    offset = torch.linspace(0, (b.size(0) - 1) * self.num_atoms, b.size(0), device=self._device).long().unsqueeze(1).expand(b.size(0), self.num_atoms)
+                    proj_dist = torch.zeros(next_Q_dist.size(), device=self._device)
+                    proj_dist.view(-1).index_add_(0, (l + offset).view(-1), (next_Q_dist * (u.float() - b)).view(-1))
+                    proj_dist.view(-1).index_add_(0, (u + offset).view(-1), (next_Q_dist * (b - l.float())).view(-1))
+                else:
                     if not self.use_dr3:
                         next_Q = self.Operate.operator_target(
                             torch.cat((target_F1, target_F2), dim=0), 
@@ -508,15 +681,28 @@ class CEXP(AbstractAgent):
                         )
                         next_Q, next_Q_feature = next_Q.squeeze(), next_Q_feature.squeeze()
                     next_Q = torch.min(next_Q[:zs.size(0)], next_Q[zs.size(0):])
-                if self.use_cross_attention:
-                    B_pinv = torch.pinverse(B_next)
-                    implicit_reward = torch.diag(torch.matmul(zs, B_pinv))
-                else:
-                    cov = torch.matmul(B_next.T, B_next) / B_next.shape[0]
-                    inv_cov = torch.inverse(cov)
-                    implicit_reward = (torch.matmul(B_next, inv_cov) * zs).sum(dim=1)  # batch_size
-                target_Q = implicit_reward.detach() + discounts.squeeze() * next_Q  # batch_size
-            if not self.use_VIB:
+                    target_Q = implicit_reward.detach() + discounts.squeeze() * next_Q  # batch_size
+            if self.use_distribution:
+                # u, std = self.Operate.operator(
+                #     torch.cat((F1, F2), dim=0),
+                #     torch.cat((zs, zs), dim=0)
+                # )
+                # u, std = u.squeeze(), std.squeeze()
+                # current_distribution = torch.distributions.normal.Normal(u, std)
+                # Q = current_distribution.sample()
+                # Q = torch.min(Q[:zs.size(0)], Q[zs.size(0):])
+                # q_loss = torch.distributions.kl.kl_divergence(
+                #     current_distribution, target_distribution
+                # ).mean()
+                Q_dist = self.Operate.operator(
+                    torch.cat((F1, F2), dim=0), 
+                    torch.cat((zs, zs), dim=0)
+                ).squeeze()
+                Q1_dist, Q2_dist = Q_dist[:zs.size(0)], Q_dist[zs.size(0):]
+                Q_dist = torch.where(torch.sum(Q1_dist * self.support, dim=1).unsqueeze(-1) <= torch.sum(Q2_dist * self.support, dim=1).unsqueeze(-1), Q1_dist, Q2_dist)
+                Q = torch.sum(Q_dist * self.support, dim=1)
+                q_loss = -torch.sum(proj_dist * torch.log(Q_dist + 1e-8), dim=1).mean()
+            else:
                 if not self.use_dr3:
                     Q = self.Operate.operator_target(
                         torch.cat((F1, F2), dim=0), 
@@ -529,8 +715,7 @@ class CEXP(AbstractAgent):
                     )
                     Q, Q_feature = Q.squeeze(), Q_feature.squeeze()
                 Q = torch.min(Q[:zs.size(0)], Q[zs.size(0):])
-
-            q_loss = F.mse_loss(Q, target_Q) * self.q_coefficient
+                q_loss = F.mse_loss(Q, target_Q) * self.q_coefficient
             total_loss = total_loss + q_loss
 
         # --- orthonormalisation loss ---
@@ -547,33 +732,37 @@ class CEXP(AbstractAgent):
 
         if self.use_q_loss:
             metrics = {
-                "train/forward_backward_total_loss": total_loss,
+               "train/forward_backward_total_loss": total_loss,
                 "train/forward_backward_fb_loss": fb_loss,
                 "train/forward_backward_fb_diag_loss": fb_diag_loss,
                 "train/forward_backward_fb_off_diag_loss": fb_off_diag_loss,
                 "train/q_loss": q_loss,
+                "train/auxiliary_loss": auxiliary_loss,
                 "train/ortho_diag_loss": ortho_loss_diag,
                 "train/ortho_off_diag_loss": ortho_loss_off_diag,
                 "train/target_M": target_M.mean().item(),
                 "train/M_next": M_next.mean().item(),
-                "train/F1": F1.mean().item(), 
-                "train/target_F1": target_F1.mean().item(), 
+                "train/M_rand": M_rand.mean().item(),
+                "train/F1": F1.mean().item(),
                 "train/F2": F2.mean().item(),
-                "train/target_F2": target_F2.mean().item(), 
+                "train/target_F1": target_F1.mean().item(),
+                "train/target_F2": target_F2.mean().item(),
                 "train/F1_norm1": torch.mean(torch.norm(F1, p=1, dim=1)).item(),
-                "train/target_F1_norm1": torch.mean(torch.norm(target_F1, p=1, dim=1)).item(),
                 "train/F2_norm1": torch.mean(torch.norm(F2, p=1, dim=1)).item(),
+                "train/target_F1_norm1": torch.mean(torch.norm(target_F1, p=1, dim=1)).item(),
                 "train/target_F2_norm1": torch.mean(torch.norm(target_F2, p=1, dim=1)).item(),
-                "train/B_next": B_next.mean().item(),
-                "train/B_next_norm1": torch.mean(torch.norm(B_next, p=1, dim=1)).item(),
-                "train/B_next_var": B_next.var(dim=1).mean().item(),
                 "train/B_rand": B_rand.mean().item(),
+                "train/B_next": B_next.mean().item(),
+                "train/target_B": target_B.mean().item(),
                 "train/B_rand_norm1": torch.mean(torch.norm(B_rand, p=1, dim=1)).item(),
+                "train/B_next_norm1": torch.mean(torch.norm(B_next, p=1, dim=1)).item(),
+                "train/target_B_norm1": torch.mean(torch.norm(target_B, p=1, dim=1)).item(),
                 "train/B_rand_var": B_rand.var(dim=1).mean().item(),
-                "train/next_Q": next_Q.mean().item(),
-                "train/Q": Q.mean().item(),
+                "train/B_next_var": B_next.var(dim=1).mean().item(),
+                "train/target_B_var": target_B.var(dim=1).mean().item(),
                 "train/implicit_reward": implicit_reward.mean().item(),
-                "train/dr3_implict_reg": dr3_implict_reg.item(),
+                "train/target_Q": target_Q.mean().item(),
+                "train/Q": Q.mean().item(),
             }
         else: 
             metrics = {
@@ -581,38 +770,65 @@ class CEXP(AbstractAgent):
                 "train/forward_backward_fb_loss": fb_loss,
                 "train/forward_backward_fb_diag_loss": fb_diag_loss,
                 "train/forward_backward_fb_off_diag_loss": fb_off_diag_loss,
+                "train/auxiliary_loss": auxiliary_loss,
                 "train/ortho_diag_loss": ortho_loss_diag,
                 "train/ortho_off_diag_loss": ortho_loss_off_diag,
                 "train/target_M": target_M.mean().item(),
-                "train/M": M1_next.mean().item(),
-                "train/F": F1.mean().item(),
-                "train/F_norm1": torch.mean(torch.norm(F1, p=1, dim=1)).item(),
-                "train/B": B_next.mean().item(),
-                "train/B_norm1": torch.mean(torch.norm(B_next, p=1, dim=1)).item(),
-                "train/B_var": B_next.var(dim=1).mean().item(),
-                "train/dr3_implict_reg": dr3_implict_reg.item(),
+                "train/M_next": M_next.mean().item(),
+                "train/M_rand": M_rand.mean().item(),
+                "train/F1": F1.mean().item(),
+                "train/F2": F2.mean().item(),
+                "train/target_F1": target_F1.mean().item(),
+                "train/target_F2": target_F2.mean().item(),
+                "train/F1_norm1": torch.mean(torch.norm(F1, p=1, dim=1)).item(),
+                "train/F2_norm1": torch.mean(torch.norm(F2, p=1, dim=1)).item(),
+                "train/target_F1_norm1": torch.mean(torch.norm(target_F1, p=1, dim=1)).item(),
+                "train/target_F2_norm1": torch.mean(torch.norm(target_F2, p=1, dim=1)).item(),
+                "train/B_rand": B_rand.mean().item(),
+                "train/B_next": B_next.mean().item(),
+                "train/target_B": target_B.mean().item(),
+                "train/B_rand_norm1": torch.mean(torch.norm(B_rand, p=1, dim=1)).item(),
+                "train/B_next_norm1": torch.mean(torch.norm(B_next, p=1, dim=1)).item(),
+                "train/target_B_norm1": torch.mean(torch.norm(target_B, p=1, dim=1)).item(),
+                "train/B_rand_var": B_rand.var(dim=1).mean().item(),
+                "train/B_next_var": B_next.var(dim=1).mean().item(),
+                "train/target_B_var": target_B.var(dim=1).mean().item(),
             }
-
+        if self.use_dr3:
+            metrics["train/dr3_reg"] = dr3_implict_reg.item()
         return total_loss, metrics, \
-               F1, F2, B_next, B_rand, M1_next, M2_next, target_B, off_diagonal, actor_std_dev, dormant_indices
+               F1, F2, B_next, B_rand, target_B, off_diagonal, actor_std_dev, dormant_indices, auxiliary_loss
 
     def update_actor(
-        self, observation: torch.Tensor, z: torch.Tensor, step: int
+        self, observation: torch.Tensor, z: torch.Tensor, discounts: torch.Tensor, step: int
     ) -> Dict[str, float]:
 
         std = schedule(self.std_dev_schedule, step)
         action, action_dist = self.actor(observation, z, std, sample=True)
-        actor_dormant_indices=None
+        actor_dormant_indices = None
         if self.use_dormant and step % self.reset_interval == 0 and step > 5000:
-            _, actor_dormant_indices, _ = cal_dormant_ratio(self.actor, (observation, z), type='actor', percentage=0.1)
+            _, actor_dormant_indices, _ = cal_dormant_ratio(self.actor, observation, z, std, type='actor', percentage=0.1)
 
-        # with torch.no_grad():
         F1, F2 = self.Operate.forward_representation(
             observation=observation, z=z, action=action
         )
-
-        # get Qs from F and z'
-        if not self.use_VIB:
+        if self.use_distribution:
+            # u, std = self.Operate.operator(
+            #     torch.cat((F1, F2), dim=0),
+            #     torch.cat((z, z), dim=0)
+            # )
+            # u, std = u.squeeze(), std.squeeze()
+            # current_distribution = torch.distributions.normal.Normal(u, std)
+            # Q = current_distribution.sample()
+            # actor_loss = -u
+            Q_dist = self.Operate.operator(
+                torch.cat((F1, F2), dim=0),
+                torch.cat((z, z), dim=0)
+            ).squeeze()
+            Q1_dist, Q2_dist = Q_dist[:z.size(0)], Q_dist[z.size(0):]
+            Q = torch.min(torch.sum(Q1_dist * self.support, dim=1), torch.sum(Q2_dist * self.support, dim=1))
+            actor_loss = -Q
+        else:
             if not self.use_dr3:
                 Q = self.Operate.operator_target(
                     torch.cat((F1, F2), dim=0), 
@@ -625,15 +841,14 @@ class CEXP(AbstractAgent):
                 )
                 Q = Q.squeeze()
             Q = torch.min(Q[:z.size(0)], Q[z.size(0):])
-        actor_loss = -Q
+            actor_loss = -Q
 
         if (
             type(self.actor.actor)  # pylint: disable=unidiomatic-typecheck
             == AbstractGaussianActor
         ):
-            # add an entropy regularisation term
             log_prob = action_dist.log_prob(action).sum(-1)
-            actor_loss += 0.1 * log_prob  # NOTE: currently hand-coded weight!
+            actor_loss += 0.1 * log_prob
             mean_log_prob = log_prob.mean().item()
         else:
             mean_log_prob = 0.0
@@ -655,11 +870,9 @@ class CEXP(AbstractAgent):
         return metrics, actor_dormant_indices
 
     def load(self, filepath: Path):
-        """Loads model."""
         pass
 
     def sample_z(self, size: int) -> torch.Tensor:
-        """Samples z in the sphere of radius sqrt(D)."""
         gaussian_random_variable = torch.randn(
             size, self._z_dimension, dtype=torch.float32, device=self._device
         )
@@ -682,16 +895,31 @@ class CEXP(AbstractAgent):
 
         z = math.sqrt(self._z_dimension) * torch.nn.functional.normalize(z, dim=1)
         z = z.squeeze().cpu().numpy()
+
         return z
 
     def predict_q(
-        self, observation: torch.Tensor, z: torch.Tensor, action: torch.Tensor
+        self, observation: torch.Tensor, z: torch.Tensor, action: torch.Tensor, discounts: torch.Tensor
     ):
 
-        F1, F2 = self.Operate.forward_representation(observation=observation, z=z, action=action)
-
-        # get Qs from F and z
-        if not self.use_VIB:
+        F1, F2 = self.Operate.forward_representation(
+            observation=observation, z=z, action=action
+        )
+        if self.use_distribution:
+            # u, std = self.Operate.operator(
+            #     torch.cat((F1, F2), dim=0),
+            #     torch.cat((z, z), dim=0)
+            # )
+            # u, std = u.squeeze(), std.squeeze()
+            # current_distribution = torch.distributions.normal.Normal(u, std)
+            # Q = current_distribution.sample()
+            Q_dist = self.Operate.operator(
+                torch.cat((F1, F2), dim=0),
+                torch.cat((z, z), dim=0)
+            ).squeeze()
+            Q1_dist, Q2_dist = Q_dist[:z.size(0)], Q_dist[z.size(0):]
+            Q = torch.min(torch.sum(Q1_dist * self.support, dim=1), torch.sum(Q2_dist * self.support, dim=1))
+        else:
             if not self.use_dr3:
                 Q = self.Operate.operator_target(
                     torch.cat((F1, F2), dim=0), 
@@ -719,14 +947,17 @@ class CEXP(AbstractAgent):
         self,
         observations: torch.Tensor,
         next_observations: torch.Tensor,
+        rand_observations: torch.Tensor,
         zs: torch.Tensor,
         actor_std_dev: torch.Tensor,
         F1: torch.Tensor,
         F2: torch.Tensor,
+        discount: torch.Tensor,
+        B_next: torch.Tensor,
+        M_pealty_coefficient: float = 1.0,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-
+        
         with torch.no_grad():
-
             repeated_observations_ood = observations.repeat(
                 self.ood_action_samples, 1, 1
             ).reshape(self.ood_action_samples * self.batch_size, -1)
@@ -738,7 +969,7 @@ class CEXP(AbstractAgent):
                 size=(self.ood_action_samples * self.batch_size, self.action_length),
                 device=self._device,
             ).uniform_(-1, 1)
-
+        
             if self.actor_action_samples > 0:
                 repeated_observations_actor = observations.repeat(
                     self.actor_action_samples, 1, 1
@@ -764,7 +995,6 @@ class CEXP(AbstractAgent):
                     sample=True,
                 )  # [actor_action_samples * batch_size, action_length]
 
-        # get cml Fs
         ood_F1, ood_F2 = self.Operate.forward_representation(
             repeated_observations_ood, ood_actions, repeated_zs_ood
         )  # [ood_action_samples * batch_size, latent_dim]
@@ -779,11 +1009,10 @@ class CEXP(AbstractAgent):
             )
             actor_current_F1, actor_current_F2 = self.Operate.forward_representation(
                 repeated_observations_actor, actor_current_actions, repeated_zs_actor
-            )  # [actor_action_samples * batch_size, latent_dim]   
+            )  # [actor_action_samples * batch_size, latent_dim]
             actor_next_F1, actor_next_F2 = self.Operate.forward_representation(
                 repeated_next_observations_actor, actor_next_actions, repeated_zs_actor
             )  # [actor_action_samples * batch_size, latent_dim]
-            
             cat_F1 = torch.cat(
                 [
                     ood_F1,
@@ -805,13 +1034,26 @@ class CEXP(AbstractAgent):
         else:
             cat_F1 = ood_F1
             cat_F2 = ood_F2
-
+            
         repeated_zs = zs.repeat(self.total_action_samples, 1, 1).reshape(
             self.total_action_samples * self.batch_size, -1
         )
 
-        # convert to Qs
-        if not self.use_VIB:
+        if self.use_distribution:
+            # u, std = self.Operate.operator(
+            #     torch.cat((cat_F1, cat_F2), dim=0),
+            #     torch.cat((repeated_zs, repeated_zs), dim=0)
+            # )
+            # u, std = u.squeeze(), std.squeeze()
+            # current_distribution = torch.distributions.normal.Normal(u, std)
+            # cql_cat_Q = current_distribution.sample()
+            cql_cat_Q_dist = self.Operate.operator(
+                torch.cat((cat_F1, cat_F2), dim=0),
+                torch.cat((repeated_zs, repeated_zs), dim=0)
+            ).squeeze()
+            cql_cat_Q1_dist, cql_cat_Q2_dist = cql_cat_Q_dist[:repeated_zs.size(0)], cql_cat_Q_dist[repeated_zs.size(0):]
+            cql_cat_Q1, cql_cat_Q2 = torch.sum(cql_cat_Q1_dist * self.support, dim=1), torch.sum(cql_cat_Q2_dist * self.support, dim=1)
+        else:
             if not self.use_dr3:
                 cql_cat_Q = self.Operate.operator(
                     torch.cat((cat_F1, cat_F2), dim=0),
@@ -824,14 +1066,27 @@ class CEXP(AbstractAgent):
                 )
                 cql_cat_Q = cql_cat_Q.squeeze()
             cql_cat_Q1, cql_cat_Q2 = cql_cat_Q[:repeated_zs.size(0)], cql_cat_Q[repeated_zs.size(0):]
-
+            
         cql_logsumexp_Q = (
             torch.logsumexp(cql_cat_Q1, dim=0).mean()
             + torch.logsumexp(cql_cat_Q2, dim=0).mean()
         )
 
-        # get existing Qs
-        if not self.use_VIB:
+        if self.use_distribution:
+            # u, std = self.Operate.operator(
+            #     torch.cat((F1, F2), dim=0),
+            #     torch.cat((zs, zs), dim=0)
+            # )
+            # u, std = u.squeeze(), std.squeeze()
+            # current_distribution = torch.distributions.normal.Normal(u, std)
+            # Q = current_distribution.sample()
+            Q_dist = self.Operate.operator(
+                torch.cat((F1, F2), dim=0),
+                torch.cat((zs, zs), dim=0)
+            ).squeeze()
+            Q1_dist, Q2_dist = Q_dist[:zs.size(0)], Q_dist[zs.size(0):]
+            Q1, Q2 = torch.sum(Q1_dist * self.support, dim=1), torch.sum(Q2_dist * self.support, dim=1)
+        else:
             if not self.use_dr3:
                 Q = self.Operate.operator_target(
                     torch.cat((F1, F2), dim=0), 
@@ -844,7 +1099,7 @@ class CEXP(AbstractAgent):
                 )
                 Q = Q.squeeze()
             Q1, Q2 = Q[:zs.size(0)], Q[zs.size(0):]
-                
+        
         conservative_penalty_Q = cql_logsumexp_Q - (Q1 + Q2).mean()
         conservative_penalty = conservative_penalty_Q
         
@@ -854,29 +1109,24 @@ class CEXP(AbstractAgent):
             "train/cql_cat_Q1": cql_cat_Q1.mean().item(),
             "train/cql_cat_Q2": cql_cat_Q2.mean().item(),
         }
-            
-
         return conservative_penalty, metrics
-
+        
     def _tune_alpha(
         self,
         conservative_penalty: torch.Tensor,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
 
-        # alpha auto-tuning
         if self.lagrange:
             alpha = torch.clamp(self.critic_log_alpha.exp(), min=0.0, max=1e6)
             alpha_loss = (
                 -0.5 * alpha * (conservative_penalty - self.target_conservative_penalty)
             )
-
             self.critic_alpha_optimizer.zero_grad()
             alpha_loss.backward(retain_graph=True)
             self.critic_alpha_optimizer.step()
             alpha = torch.clamp(self.critic_log_alpha.exp(), min=0.0, max=1e6).detach()
             alpha_loss = alpha_loss.detach().item()
 
-        # fixed alpha
         else:
             alpha = self.alpha
             alpha_loss = 0.0
@@ -887,112 +1137,3 @@ class CEXP(AbstractAgent):
         }
 
         return alpha, metrics
-    
-    
-def perturb(net, optimizer, perturb_factor):
-    linear_keys = [name for name, mod in net.named_modules() if isinstance(mod, torch.nn.Linear)]
-    new_net = deepcopy(net)
-    new_net.apply(weight_init)
-
-    for name, param in net.named_parameters():
-        if any(key in name for key in linear_keys):
-            noise = new_net.state_dict()[name] * (1 - perturb_factor)
-            param.data = param.data * perturb_factor + noise
-        else:
-            param.data = net.state_dict()[name]
-    optimizer.state = defaultdict(dict)
-    return net, optimizer
-
-    
-def cal_dormant_grad(model, type = 'critic', percentage=0.025):
-    metrics = dict()
-    total_neurons = 0
-    dormant_neurons = 0
-    
-    count = 0
-    for module in (module for module in model.modules() if isinstance(module, nn.Linear) and module.weight.grad is not None):
-        grad_norm = module.weight.grad.norm(dim=1)  
-        avg_grad_norm = grad_norm.mean()
-        dormant_indice = (grad_norm < avg_grad_norm * percentage).nonzero(as_tuple=True)[0]
-        total_neurons += module.weight.shape[0]
-        dormant_neurons += len(dormant_indice)
-        module_dormant_grad = len(dormant_indice) / module.weight.shape[0]
-        metrics[type + '_' + str(count) + '_grad_dormant'] = module_dormant_grad
-        count += 1
-    metrics[type + "_grad_dormant_ratio"] = dormant_neurons / total_neurons
-    return metrics
-
-
-def perturb_factor(dormant_ratio, max_perturb_factor=0.9, min_perturb_factor=0.2):
-    return min(max(min_perturb_factor, 1 - dormant_ratio), max_perturb_factor)
-
-
-def cal_dormant_ratio(model, *inputs, type='policy', percentage=0.1):
-    metrics = dict()
-    hooks = []
-    hook_handlers = []
-    total_neurons = 0
-    dormant_neurons = 0
-    dormant_indices = dict()
-    active_indices = dict()
-
-    for _, module in model.named_modules():
-        if isinstance(module, nn.Linear):
-            hook = LinearOutputHook()
-            hooks.append(hook)
-            hook_handlers.append(module.register_forward_hook(hook))
-
-    with torch.no_grad():
-        model(*inputs)
-
-    count = 0
-    for module, hook in zip((module for module in model.modules() if isinstance(module, nn.Linear)), hooks):
-        with torch.no_grad():
-            for output_data in hook.outputs:
-                mean_output = output_data.abs().mean(0)
-                avg_neuron_output = mean_output.mean()
-                dormant_indice = (mean_output < avg_neuron_output *
-                                   percentage).nonzero(as_tuple=True)[0]
-                all_indice = list(range(module.weight.shape[0]))
-                active_indice = [index for index in all_indice if index not in dormant_indice]
-                total_neurons += module.weight.shape[0]
-                dormant_neurons += len(dormant_indice)
-                module_dormant_ratio = len(dormant_indices) / module.weight.shape[0]
-                if module_dormant_ratio > 0.1:
-                    dormant_indices[str(count)] = dormant_indice
-                    active_indices[str(count)] = active_indice
-                count += 1
-
-    for hook in hooks:
-        hook.outputs.clear()
-
-    for hook_handler in hook_handlers:
-        hook_handler.remove()
-
-    metrics[type + "_output_dormant_ratio"] = dormant_neurons / total_neurons
-
-    return metrics, dormant_indices, active_indices
-
-class LinearOutputHook:
-    def __init__(self):
-        self.outputs = []
-    def __call__(self, module, module_in, module_out):
-        self.outputs.append(module_out)
-        
-        
-def dormant_perturb(model, optimizer, dormant_indices, perturb_factor=0.2):
-    random_model = deepcopy(model)
-    random_model.apply(weight_init)
-    linear_layers = [module for module in model.modules() if isinstance(module, nn.Linear)]
-    random_layers = [module for module in random_model.modules() if isinstance(module, nn.Linear)]
-
-    for key in dormant_indices:
-        perturb_layer = linear_layers[key]
-        random_layer = random_layers[key]
-        with torch.no_grad():
-            for index in dormant_indices[key]:
-                noise = (random_layer.weight[index, :] * (1 - perturb_factor)).clone()
-                perturb_layer.weight[index, :] = perturb_layer.weight[index, :] * perturb_factor + noise
-
-    optimizer.state = defaultdict(dict)
-    return model, optimizer

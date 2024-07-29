@@ -14,8 +14,6 @@ from agents.utils import schedule
 def asymmetric_l2_loss(u, tau):
     return torch.mean(torch.abs(tau - (u < 0).float()) * u**2)
 
-torch.autograd.set_detect_anomaly(True)
-
 class IEXP(AbstractAgent):
 
     def __init__(
