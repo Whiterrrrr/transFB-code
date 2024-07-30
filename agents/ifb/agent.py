@@ -265,7 +265,7 @@ class IFB(AbstractAgent):
         with torch.no_grad():
             Q1, Q2 = torch.einsum("sd, sd -> s", F1, zs), torch.einsum("sd, sd -> s", F2, zs)
             Q = torch.min(Q1, Q2)
-        V = torch.einsum("sd, td -> st", K, zs)
+        V = torch.einsum("sd, td -> s", K, zs)
         B_next = self.FB.backward_representation(next_observations)
 
         M1_next = torch.einsum("sd, td -> st", F1, B_next)
@@ -338,7 +338,7 @@ class IFB(AbstractAgent):
         Q1 = torch.einsum("sd, sd -> s", F1, z)
         Q2 = torch.einsum("sd, sd -> s", F2, z)
         Q = torch.min(Q1, Q2)
-        V = torch.einsum("sd, td -> st", K, z)
+        V = torch.einsum("sd, td -> s", K, z)
         
         adv = (Q - V.detach())
 
