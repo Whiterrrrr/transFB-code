@@ -206,29 +206,6 @@ class IFB(AbstractAgent):
 
         return metrics
 
-    def update_fb(
-        self,
-        observations: torch.Tensor,
-        actions: torch.Tensor,
-        next_observations: torch.Tensor,
-        discounts: torch.Tensor,
-        zs: torch.Tensor,
-        step: int,
-    ) -> Dict[str, float]:
-
-        total_loss, metrics, _, _, _, _, _, _, _ = self._update_fb_inner(
-            observations, actions, next_observations, discounts, zs, step
-        )
-
-        self.FB_optimizer.zero_grad(set_to_none=True)
-        total_loss.backward()
-        for param in self.FB.parameters():
-            if param.grad is not None:
-                param.grad.data.clamp_(-1, 1)
-        self.FB_optimizer.step()
-
-        return metrics
-
     def _update_fb_inner(
         self,
         observations: torch.Tensor,
@@ -239,21 +216,24 @@ class IFB(AbstractAgent):
         step: int,
     ):
         with torch.no_grad():
+            target_F1, target_F2 = self.FB.forward_representation_target(
+                observation=observations, action=actions, z=zs
+            )
             target_K = self.FB.state_forward_representation_target(
                 observation=next_observations, z=zs
             )
             target_B = self.FB.backward_representation_target(
                 observation=next_observations
             )
-            target_O = torch.einsum(
-                "sd, td -> st", target_K, target_B
-            )
+            target_O = torch.einsum("sd, td -> st", target_K, target_B)
             next_V = torch.einsum("sd, td -> s", target_K, zs)
-
+            target_M1, target_M2 = torch.einsum("sd, td -> st", target_F1, target_B), torch.einsum("sd, td -> st", target_F2, target_B)
+            target_M = torch.min(target_M1, target_M2)
 
         F1, F2 = self.FB.forward_representation(observations, actions, zs)
         K = self.FB.state_forward_representation(observations, zs)
         B_next = self.FB.backward_representation(next_observations)
+        O = torch.einsum("sd, td -> st", K, B_next)
         Q1, Q2 = torch.einsum("sd, sd -> s", F1, zs), torch.einsum("sd, sd -> s", F2, zs)
         Q = torch.min(Q1, Q2)
         V = torch.einsum("sd, td -> s", K, zs)
@@ -261,8 +241,8 @@ class IFB(AbstractAgent):
         M1_next = torch.einsum("sd, td -> st", F1, B_next)
         M2_next = torch.einsum("sd, td -> st", F2, B_next)
 
-        I = torch.eye(*M1_next.size(), device=self._device)
-        off_diagonal = ~I.bool()
+        I = torch.eye(*M1_next.size(), device=self._device)  # next state = s_{t+1}
+        off_diagonal = ~I.bool()  # future states =/= s_{t+1}
 
         fb_off_diag_loss = 0.5 * sum(
             (M - discounts * target_O)[off_diagonal].pow(2).mean()
@@ -273,11 +253,13 @@ class IFB(AbstractAgent):
         fb_loss = fb_diag_loss + fb_off_diag_loss
          
         adv = Q.detach() - V
+        adv_fb = (target_M - O)[off_diagonal]
         v_loss = asymmetric_l2_loss(adv, self.iql_tau)
+        adv_fb_loss = asymmetric_l2_loss(adv_fb, self.iql_tau)
         
         cov = torch.matmul(B_next.T, B_next) / B_next.shape[0]
         inv_cov = torch.inverse(cov)
-        implicit_reward = (torch.matmul(B_next, inv_cov) * zs).sum(dim=1)  # batch_size
+        implicit_reward = (torch.matmul(B_next, inv_cov) * zs).sum(dim=1)
         targets = implicit_reward + discounts.squeeze() * next_V.detach()
         q_loss = F.mse_loss(Q, targets)
         
@@ -288,14 +270,16 @@ class IFB(AbstractAgent):
             ortho_loss_diag + ortho_loss_off_diag
         )
 
-        total_loss = fb_loss + ortho_loss + v_loss + q_loss
+        total_loss = fb_loss + ortho_loss + v_loss + q_loss + adv_fb_loss
         
         metrics = {
-            "train/forward_backward_total_loss": total_loss,
+            "train/total_loss": total_loss,
             "train/forward_backward_fb_loss": fb_loss,
             "train/forward_backward_fb_diag_loss": fb_diag_loss,
             "train/forward_backward_fb_off_diag_loss": fb_off_diag_loss,
-            "train/forward_backward_v_loss": v_loss,
+            "train/adv_fb_loss":adv_fb_loss,
+            "train/v_loss": v_loss,
+            "train/q_loss": q_loss,
             "train/ortho_diag_loss": ortho_loss_diag,
             "train/ortho_off_diag_loss": ortho_loss_off_diag,
             "train/M1_next": M1_next.mean().item(),
@@ -303,12 +287,18 @@ class IFB(AbstractAgent):
             "train/target_B": target_B.mean().item(),
             "train/target_O": target_O.mean().item(),
             "train/target_K": target_K.mean().item(),
+            "train/next_V": next_V.mean().item(),
+            "train/target_M": target_M.mean().item(),
+            "train/target_F1": target_F1.mean().item(),
+            "train/target_F2": target_F2.mean().item(),
             "train/F1": F1.mean().item(),
             "train/F2": F2.mean().item(),
             "train/K": K.mean().item(),
             "train/B": B_next.mean().item(),
             "train/V": V.mean().item(),
             "train/Q": Q.mean().item(),
+            "train/O": O.mean().item(),
+            "train/implicit_reward": implicit_reward.mean().item(),
         }
 
         return total_loss, metrics, \
