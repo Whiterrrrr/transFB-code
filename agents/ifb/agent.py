@@ -205,6 +205,29 @@ class IFB(AbstractAgent):
         }
 
         return metrics
+    
+    def update_fb(
+        self,
+        observations: torch.Tensor,
+        actions: torch.Tensor,
+        next_observations: torch.Tensor,
+        discounts: torch.Tensor,
+        zs: torch.Tensor,
+        step: int,
+    ) -> Dict[str, float]:
+
+        total_loss, metrics, _, _, _, _, _, _, _ = self._update_fb_inner(
+            observations, actions, next_observations, discounts, zs, step
+        )
+
+        self.FB_optimizer.zero_grad(set_to_none=True)
+        total_loss.backward()
+        for param in self.FB.parameters():
+            if param.grad is not None:
+                param.grad.data.clamp_(-1, 1)
+        self.FB_optimizer.step()
+
+        return metrics
 
     def _update_fb_inner(
         self,
