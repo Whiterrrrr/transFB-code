@@ -6,7 +6,7 @@ from typing import Tuple, Dict, Optional
 
 import torch
 import numpy as np
-
+import torch.nn.functional as F
 from agents.fb.models import ForwardBackwardRepresentation, ActorModel
 from agents.base import AbstractAgent, Batch, AbstractGaussianActor
 from agents.utils import schedule
@@ -245,15 +245,18 @@ class IFB(AbstractAgent):
             target_B = self.FB.backward_representation_target(
                 observation=next_observations
             )
-            target_O = torch.einsum("sd, td -> st", target_K, target_B)
+            target_O = torch.einsum(
+                "sd, td -> st", target_K, target_B
+            )
+            next_V = torch.einsum("sd, td -> s", target_K, zs)
+
 
         F1, F2 = self.FB.forward_representation(observations, actions, zs)
         K = self.FB.state_forward_representation(observations, zs)
-        with torch.no_grad():
-            Q1, Q2 = torch.einsum("sd, sd -> s", F1, zs), torch.einsum("sd, sd -> s", F2, zs)
-            Q = torch.min(Q1, Q2)
-        V = torch.einsum("sd, td -> s", K, zs)
         B_next = self.FB.backward_representation(next_observations)
+        Q1, Q2 = torch.einsum("sd, sd -> s", F1, zs), torch.einsum("sd, sd -> s", F2, zs)
+        Q = torch.min(Q1, Q2)
+        V = torch.einsum("sd, td -> s", K, zs)
 
         M1_next = torch.einsum("sd, td -> st", F1, B_next)
         M2_next = torch.einsum("sd, td -> st", F2, B_next)
@@ -269,9 +272,15 @@ class IFB(AbstractAgent):
         fb_diag_loss = -sum(M.diag().mean() for M in [M1_next, M2_next])
         fb_loss = fb_diag_loss + fb_off_diag_loss
          
-        adv = Q - V
+        adv = Q.detach() - V
         v_loss = asymmetric_l2_loss(adv, self.iql_tau)
-
+        
+        cov = torch.matmul(B_next.T, B_next) / B_next.shape[0]
+        inv_cov = torch.inverse(cov)
+        implicit_reward = (torch.matmul(B_next, inv_cov) * zs).sum(dim=1)  # batch_size
+        targets = implicit_reward + discounts.squeeze() * next_V.detach()
+        q_loss = F.mse_loss(Q, targets)
+        
         covariance = torch.matmul(B_next, B_next.T)
         ortho_loss_diag = -2 * covariance.diag().mean()
         ortho_loss_off_diag = covariance[off_diagonal].pow(2).mean()
@@ -279,7 +288,7 @@ class IFB(AbstractAgent):
             ortho_loss_diag + ortho_loss_off_diag
         )
 
-        total_loss = fb_loss + ortho_loss + v_loss
+        total_loss = fb_loss + ortho_loss + v_loss + q_loss
         
         metrics = {
             "train/forward_backward_total_loss": total_loss,
@@ -331,7 +340,7 @@ class IFB(AbstractAgent):
             log_prob = action_dist.log_prob(action).sum(-1)
             actor_loss += 0.1 * log_prob  # NOTE: currently hand-coded weight!
             mean_log_prob = log_prob.mean().item()
-            raise NotImplementedError("Gaussian actor not implemented")
+            raise NotImplementedError
         else:
             bc_losses = torch.sum((action - actions)**2, dim=1)
             mean_log_prob = 0.0
@@ -392,7 +401,6 @@ class IFB(AbstractAgent):
     def soft_update_params(
         network: torch.nn.Sequential, target_network: torch.nn.Sequential, tau: float
     ) -> None:
-
         for param, target_param in zip(
             network.parameters(), target_network.parameters()
         ):
