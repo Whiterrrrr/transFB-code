@@ -411,6 +411,7 @@ elif config["algorithm"] == "ifb":
         iql_tau=config["iql_tau"],
         device=config["device"],
         name=config["name"],
+        iql_beta=config['iql_beta'],
     )
 
     replay_buffer = FBReplayBuffer(
@@ -590,7 +591,6 @@ elif config["algorithm"] == "iexp":
         f_loss_coefficient=config['f_loss_coefficient'],
         asymmetric_l2_tau=config['asymmetric_l2_tau'],
         use_AWAR = config['use_AWAR'],
-        # use_B_sa_pairs = config['use_B_sa_pairs']
     )
     
     replay_buffer = FBReplayBuffer(

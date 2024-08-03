@@ -49,6 +49,7 @@ class IFB(AbstractAgent):
         iql_tau: float,
         device: torch.device,
         name: str = 'IFB',
+        iql_beta: float=3
     ):
         super().__init__(
             observation_length=observation_length,
@@ -96,8 +97,8 @@ class IFB(AbstractAgent):
 
         self.encoder = torch.nn.Identity()
         self.augmentation = torch.nn.Identity()
+        self.beta=iql_beta
 
-        # load weights into target networks
         self.FB.forward_representation_target.load_state_dict(
             self.FB.forward_representation.state_dict()
         )
@@ -108,7 +109,6 @@ class IFB(AbstractAgent):
             self.FB.state_forward_representation.state_dict()
         )
             
-        # optimisers
         self.FB_optimizer = torch.optim.Adam(
             [
                 {"params": self.FB.forward_representation.parameters()},
@@ -147,7 +147,6 @@ class IFB(AbstractAgent):
         h = self.encoder(observation)
         z = torch.as_tensor(task, dtype=torch.float32, device=self._device).unsqueeze(0)
 
-        # get action from actor
         std_dev = schedule(self.std_dev_schedule, step)
         action, _ = self.actor(h, z, std_dev, sample=sample)
 
@@ -171,7 +170,6 @@ class IFB(AbstractAgent):
         actor_zs = zs.clone().requires_grad_(True)
         actor_observations = batch.observations.clone().requires_grad_(True)
 
-        # update forward and backward models
         fb_metrics = self.update_fb(
             observations=batch.observations,
             next_observations=batch.next_observations,
@@ -181,12 +179,10 @@ class IFB(AbstractAgent):
             step=step,
         )
 
-        # update actor
         actor_metrics = self.update_actor(
-            observation=actor_observations, z=actor_zs, step=step
+            observation=actor_observations, z=actor_zs, step=step, actions=batch.actions
         )
 
-        # update target networks for forwards and backwards models
         self.soft_update_params(
             network=self.FB.forward_representation,
             target_network=self.FB.forward_representation_target,
@@ -243,23 +239,14 @@ class IFB(AbstractAgent):
         step: int,
     ):
         with torch.no_grad():
-            # target_F1, target_F2 = self.FB.forward_representation_target(
-            #     observation=observations, action=actions, z=zs
-            # )
             target_K = self.FB.state_forward_representation_target(
                 observation=next_observations, z=zs
             )
             target_B = self.FB.backward_representation_target(
                 observation=next_observations
             )
-            target_O = torch.einsum(
-                "sd, td -> st", target_K, target_B
-            )  # [batch_size, batch_size]
-            # target_M1 = torch.einsum("sd, td -> st", target_F1, target_B)
-            # target_M2 = torch.einsum("sd, td -> st", target_F2, target_B)
-            # target_M = torch.min(target_M1, target_M2)
+            target_O = torch.einsum("sd, td -> st", target_K, target_B)
 
-        # --- Forward-backward representation loss ---
         F1, F2 = self.FB.forward_representation(observations, actions, zs)
         K = self.FB.state_forward_representation(observations, zs)
         with torch.no_grad():
@@ -271,8 +258,8 @@ class IFB(AbstractAgent):
         M1_next = torch.einsum("sd, td -> st", F1, B_next)
         M2_next = torch.einsum("sd, td -> st", F2, B_next)
 
-        I = torch.eye(*M1_next.size(), device=self._device)  # next state = s_{t+1}
-        off_diagonal = ~I.bool()  # future states =/= s_{t+1}
+        I = torch.eye(*M1_next.size(), device=self._device)
+        off_diagonal = ~I.bool()
 
         fb_off_diag_loss = 0.5 * sum(
             (M - discounts * target_O)[off_diagonal].pow(2).mean()
@@ -285,7 +272,6 @@ class IFB(AbstractAgent):
         adv = Q - V
         v_loss = asymmetric_l2_loss(adv, self.iql_tau)
 
-        # --- orthonormalisation loss ---
         covariance = torch.matmul(B_next, B_next.T)
         ortho_loss_diag = -2 * covariance.diag().mean()
         ortho_loss_off_diag = covariance[off_diagonal].pow(2).mean()
@@ -294,7 +280,7 @@ class IFB(AbstractAgent):
         )
 
         total_loss = fb_loss + ortho_loss + v_loss
-
+        
         metrics = {
             "train/forward_backward_total_loss": total_loss,
             "train/forward_backward_fb_loss": fb_loss,
@@ -320,43 +306,37 @@ class IFB(AbstractAgent):
                F1, F2, B_next, M1_next, M2_next, target_B, off_diagonal
 
     def update_actor(
-        self, observation: torch.Tensor, z: torch.Tensor, step: int
+        self, observation: torch.Tensor, z: torch.Tensor, step: int, actions: torch.Tensor
     ) -> Dict[str, float]:
 
         std = schedule(self.std_dev_schedule, step)
         action, action_dist = self.actor(observation, z, std, sample=True)
 
-        # with torch.no_grad():
         F1, F2 = self.FB.forward_representation(
-            observation=observation, z=z, action=action
+            observation=observation, z=z, action=actions
         )
         K = self.FB.state_forward_representation_target(
                 observation=observation, z=z
         )
 
-        # get Qs from F and z
-        Q1 = torch.einsum("sd, sd -> s", F1, z)
-        Q2 = torch.einsum("sd, sd -> s", F2, z)
+        Q1, Q2, V = torch.einsum("sd, sd -> s", F1, z), torch.einsum("sd, sd -> s", F2, z), torch.einsum("sd, td -> s", K, z)
         Q = torch.min(Q1, Q2)
-        V = torch.einsum("sd, td -> s", K, z)
-        
         adv = (Q - V.detach())
-
-        # update actor towards action that maximise Q (minimise -Q)
-        actor_loss = -adv
-
+        exp_adv = torch.exp(self.beta * adv.detach()).clamp(max=100)
+        
         if (
             type(self.actor.actor)  # pylint: disable=unidiomatic-typecheck
             == AbstractGaussianActor
         ):
-            # add an entropy regularisation term
             log_prob = action_dist.log_prob(action).sum(-1)
             actor_loss += 0.1 * log_prob  # NOTE: currently hand-coded weight!
             mean_log_prob = log_prob.mean().item()
+            raise NotImplementedError("Gaussian actor not implemented")
         else:
+            bc_losses = torch.sum((action - actions)**2, dim=1)
             mean_log_prob = 0.0
 
-        actor_loss = actor_loss.mean()
+        actor_loss =  torch.mean(exp_adv * bc_losses)
 
         self.actor_optimizer.zero_grad(set_to_none=True)
         actor_loss.backward()
@@ -369,15 +349,12 @@ class IFB(AbstractAgent):
             "train/actor_Q": Q.mean().item(),
             "train/actor_log_prob": mean_log_prob,
         }
-
         return metrics
 
     def load(self, filepath: Path):
-        """Loads model."""
         pass
 
     def sample_z(self, size: int) -> torch.Tensor:
-        """Samples z in the sphere of radius sqrt(D)."""
         gaussian_random_variable = torch.randn(
             size, self._z_dimension, dtype=torch.float32, device=self._device
         )
@@ -398,10 +375,7 @@ class IFB(AbstractAgent):
         if rewards is not None:
             z = torch.matmul(rewards.T, z) / rewards.shape[0]  # reward-weighted average
 
-        z = math.sqrt(self._z_dimension) * torch.nn.functional.normalize(z, dim=1)
-
-        z = z.squeeze().cpu().numpy()
-
+        z = (math.sqrt(self._z_dimension) * torch.nn.functional.normalize(z, dim=1)).squeeze().cpu().numpy()
         return z
 
     def predict_q(
@@ -411,13 +385,8 @@ class IFB(AbstractAgent):
         F1, F2 = self.FB.forward_representation(
             observation=observation, z=z, action=action
         )
-
-        # get Qs from F and z
-        Q1 = torch.einsum("sd, sd -> s", F1, z)
-        Q2 = torch.einsum("sd, sd -> s", F2, z)
-        Q = torch.min(Q1, Q2)
-
-        return Q
+        Q1, Q2 = torch.einsum("sd, sd -> s", F1, z), torch.einsum("sd, sd -> s", F2, z)
+        return torch.min(Q1, Q2)
 
     @staticmethod
     def soft_update_params(
