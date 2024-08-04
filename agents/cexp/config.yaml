@@ -37,6 +37,7 @@ backward_hidden_layers: 3
 backward_activation: "relu"
 
 use_trans: true
+use_forward_backward_cross: false
 use_cross_attention: true
 use_cons: false
 use_distribution: true

@@ -95,6 +95,7 @@ class CEXP(AbstractAgent):
         use_gamma_loss: bool = False,
         use_film_cond: bool = False,
         use_linear_res=False,
+        use_forward_backward_cross=False
     ):
         assert not (use_gamma_loss and use_distribution), 'use_gamma_loss and use_distribution cannot be True at the same time'
         super().__init__(
@@ -146,7 +147,8 @@ class CEXP(AbstractAgent):
             ensemble_size=ensemble_size,
             num_atoms=num_atoms,
             use_film_cond=use_film_cond,
-            use_linear_res=use_linear_res
+            use_linear_res=use_linear_res,
+            use_forward_backward_cross=use_forward_backward_cross
         )
 
         self.actor = ActorModel(

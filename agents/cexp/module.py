@@ -174,7 +174,8 @@ class BidirectionalAttentionMixnet(nn.Module):
         ensemble_size: int = 0,
         num_atoms=51,
         use_film_cond=False,
-        use_linear_res=False
+        use_linear_res=False,
+        use_forward_backward_cross=False
     ):
         super(BidirectionalAttentionMixnet, self).__init__()
         self.use_res = use_res
@@ -189,6 +190,7 @@ class BidirectionalAttentionMixnet(nn.Module):
         self.use_film_cond=use_film_cond
         self.file_cnt = 0
         self.use_linear_res=use_linear_res
+        self.use_forward_backward_cross=use_forward_backward_cross
         
         if self.use_film_cond:
             self.film_generator = nn.Linear(z_dim, hidden_dim * 2).to(device)
@@ -222,7 +224,17 @@ class BidirectionalAttentionMixnet(nn.Module):
         self.apply(weight_init)
     
     def forward(self, forward_rep, backward_rep):
-        if not self.use_cross_attention:
+        if self.use_forward_backward_cross:
+            combined1 = combined2 = combined_output = None
+            for layer in self.attention_layers:
+                if isinstance(layer, CrossAttention):
+                    combined1 = layer(backward_rep.unsqueeze(1), forward_rep.unsqueeze(1)) if combined1 is None else layer(combined1, combined2)
+                    combined2 = layer(forward_rep.unsqueeze(1), backward_rep.unsqueeze(1)) if combined2 is None else layer(combined2, combined1)
+                else:
+                    combined1 = layer(combined1)
+                    combined2 = layer(combined2)
+            combined_output = combined1.squeeze(1) + combined2.squeeze(1)
+        elif not self.use_cross_attention:
             combined = torch.cat((forward_rep.unsqueeze(1), backward_rep.unsqueeze(1)), dim=1)
             for layer in self.attention_layers:
                 combined = combined + layer(combined) if (isinstance(layer, SelfAttention) and self.use_res) else layer(combined)
@@ -307,7 +319,8 @@ class MixNetRepresentation(torch.nn.Module):
         ensemble_size: int = 0,
         num_atoms: int = 51,
         use_film_cond: bool = False,
-        use_linear_res=False
+        use_linear_res=False,
+        use_forward_backward_cross=False
     ):
         super().__init__()
         self.forward_representation = ORERepresentation(
@@ -428,7 +441,8 @@ class MixNetRepresentation(torch.nn.Module):
                 ensemble_size=ensemble_size,
                 num_atoms=num_atoms,
                 use_film_cond=use_film_cond,
-                use_linear_res=use_linear_res
+                use_linear_res=use_linear_res,
+                use_forward_backward_cross=use_forward_backward_cross
             )
             
             self.operator_target = BidirectionalAttentionMixnet(
@@ -448,7 +462,8 @@ class MixNetRepresentation(torch.nn.Module):
                 ensemble_size=ensemble_size,
                 num_atoms=num_atoms,
                 use_film_cond=use_film_cond,
-                use_linear_res=use_linear_res
+                use_linear_res=use_linear_res,
+                use_forward_backward_cross=use_forward_backward_cross
             )
         self.apply(weight_init)
         self._discount = discount

@@ -513,6 +513,7 @@ elif config["algorithm"] == "cexp":
         use_gamma_loss=config['use_gamma_loss'],
         use_film_cond=config['use_film_cond'],
         use_linear_res=config['use_linear_res'],
+        use_forward_backward_cross=config['use_forward_backward_cross'],
     )
     
     replay_buffer = FBReplayBuffer(
