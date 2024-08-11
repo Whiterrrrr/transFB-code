@@ -1,8 +1,8 @@
 export CUDA_VISIBLE_DEVICES=0
 # export WANDB_API_KEY=183745c61e3c0db51eb85b3fcda31b527854b7aa
-python main_offline.py iexp walker rnd \
+python main_offline.py cexp walker rnd \
 --eval_tasks run stand flip walk \
---wandb_logging False \
+# --wandb_logging False \
 --seed 42 \
 --z_dimension 50 \
 --weighted_cml False \

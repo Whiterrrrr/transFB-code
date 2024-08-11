@@ -9,7 +9,7 @@ from agents.fb.models import ActorModel
 from agents.base import AbstractAgent, Batch, AbstractGaussianActor
 from agents.fb.base import FF_pred_model
 from agents.utils import schedule
-from torch.optim.lr_scheduler import CosineAnnealingLR, CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from agents.cexp.utils import perturb, cal_dormant_grad, perturb_factor, cal_dormant_ratio, dormant_perturb
 
 class CEXP(AbstractAgent):
