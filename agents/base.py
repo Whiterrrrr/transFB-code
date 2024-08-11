@@ -575,6 +575,7 @@ class OfflineReplayBuffer(AbstractOfflineReplayBuffer):
         # load offline dataset in the form of episode paths
         episodes = np.load(dataset_path, allow_pickle=True)
         episodes = dict(episodes)
+        print(f"Loaded {len(episodes)} episodes from {dataset_path}")
 
         observations = []
         actions = []

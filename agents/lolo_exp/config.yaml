@@ -1,0 +1,9 @@
+# MLP parameters
+
+input_dimension: int,
+output_dimension: int,
+hidden_dimension: int,
+hidden_layers: int,
+activation: str,
+preprocessor: False,
+layernorm: False,

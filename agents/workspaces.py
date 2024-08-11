@@ -252,7 +252,7 @@ class OfflineRLWorkspace(AbstractWorkspace):
                 config=agent_config,
                 tags=[agent.name, "core"],
                 reinit=True,
-                entity='1155173723',
+                entity='l_air',
                 project="zero-shot", 
                 name=agent.name,
             )
