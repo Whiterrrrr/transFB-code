@@ -1,14 +1,14 @@
 # training/eval
-batch_size: 512
+batch_size: 2048
 max_buffer_episodes: 5000
 z_inference_steps: 10000
 discount: 0.98
 eval_frequency: 20000  # how often to evaluate the agent in learning steps
 eval_rollouts: 10  # how many rollouts to average over when evaluating
-save_dir: "/home/tsinghuaair/zhengkx/conservative-world-models/agents/ifb/saved_models"
+save_dir: "./agents/ifb/save"
+name: "ifb actor critic 1e-4 tau 0.01" 
+project: "only FB loss"
 
-# forward-backward
-name: "ifb-rnd critic5e-5 actor1e-4 tau0.9 adv update" 
 preprocessor_hidden_dimension: 1024
 preprocessor_hidden_layers: 2
 preprocessor_output_dimension: 512
@@ -30,7 +30,7 @@ actor_hidden_layers: 2
 actor_activation: "relu"
 
 seed: 42
-critic_learning_rate: 0.00005
+critic_learning_rate: 0.0001
 actor_learning_rate: 0.0001
 learning_steps: 1000000
 learning_rate_coefficient: 1
@@ -42,3 +42,4 @@ std_dev_schedule: "0.2"
 std_dev_eval: 0.05
 tau: 0.01
 iql_tau: 0.9
+iql_beta: 5

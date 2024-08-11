@@ -411,6 +411,7 @@ elif config["algorithm"] == "ifb":
         iql_tau=config["iql_tau"],
         device=config["device"],
         name=config["name"],
+        iql_beta=config['iql_beta'],
     )
 
     replay_buffer = FBReplayBuffer(
@@ -489,11 +490,30 @@ elif config["algorithm"] == "cexp":
         use_res=config['use_res'],
         use_fed=config['use_fed'],
         M_pealty_coefficient=config['M_pealty_coefficient'],
-        use_VIB=config['use_VIB'],
         use_m_cons=config['use_m_cons'],
+        use_dr3=config['use_dr3'],
         use_2branch = config['use_2branch'],
+        update_freq=config['update_freq'],
+        dr3_coefficient=config['dr3_coefficient'],
         use_cross_attention=config['use_cross_attention'],
-        use_dual=config['use_dual'],
+        reset_interval=config['reset_interval'],
+        use_feature_norm=config['use_feature_norm'],
+        use_dormant=config['use_dormant'],
+        use_OFE = config['use_OFE'],
+        use_auxiliary = config['use_auxiliary'],
+        auxiliary_coefficient = config['auxiliary_coefficient'],
+        FF_pred_hidden_dimension = config['FF_pred_hidden_dimension'],
+        FF_pred_hidden_layers = config['FF_pred_hidden_layers'],
+        FF_pred_activation = config['FF_pred_activation'],
+        use_distribution=config['use_distribution'],
+        ensemble_size = config['ensemble_size'],
+        num_atoms=config['num_atoms'],
+        minVal=config['minVal'],
+        maxVal=config['maxVal'],
+        use_gamma_loss=config['use_gamma_loss'],
+        use_film_cond=config['use_film_cond'],
+        use_linear_res=config['use_linear_res'],
+        use_forward_backward_cross=config['use_forward_backward_cross'],
     )
     
     replay_buffer = FBReplayBuffer(
@@ -572,7 +592,6 @@ elif config["algorithm"] == "iexp":
         f_loss_coefficient=config['f_loss_coefficient'],
         asymmetric_l2_tau=config['asymmetric_l2_tau'],
         use_AWAR = config['use_AWAR'],
-        # use_B_sa_pairs = config['use_B_sa_pairs']
     )
     
     replay_buffer = FBReplayBuffer(
@@ -603,6 +622,7 @@ workspace = OfflineRLWorkspace(
     eval_std=eval_std,
     wandb_logging=config["wandb_logging"],
     device=config["device"],
+    project=config["project"],
 )
 
 if __name__ == "__main__":

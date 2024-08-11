@@ -97,6 +97,31 @@ class BackwardModel(AbstractMLP):
         return z
 
 
+class FF_pred_model(AbstractMLP):
+    def __init__(
+        self, 
+        observation_length: int,
+        z_dim: int, 
+        hidden_dimension: int, 
+        hidden_layers: int, 
+        activation: str, 
+        device: torch.device, 
+    ):
+        super().__init__(
+            input_dimension=z_dim*2,
+            output_dimension=observation_length,
+            hidden_dimension=hidden_dimension,
+            hidden_layers=hidden_layers,
+            activation=activation,
+            device=device,
+        )
+    
+    def forward(self, F1: torch.Tensor, F2: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+        input1, input2 = torch.cat([F1, z], dim=-1), torch.cat([F2, z], dim=-1)
+        z1_, z2_ = self.trunk(input1), self.trunk(input2)
+        return z1_, z2_
+    
+
 class ActorModel(nn.Module):
 
     def __init__(
