@@ -240,7 +240,8 @@ class BidirectionalAttentionMixnet(nn.Module):
                 combined = combined + layer(combined) if (isinstance(layer, SelfAttention) and self.use_res) else layer(combined)
             combined_output = torch.cat((combined[:, 0, :], combined[:, 1, :]), dim=-1)
         else:
-            combined = None
+            forward_rep = forward_rep + backward_rep
+            backward_rep, combined = forward_rep, None
             for layer in self.attention_layers:
                 if isinstance(layer, CrossAttention):
                     combined = layer(backward_rep.unsqueeze(1), forward_rep.unsqueeze(1)) if combined is None else layer(combined, forward_rep.unsqueeze(1))
