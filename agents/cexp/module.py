@@ -224,6 +224,7 @@ class BidirectionalAttentionMixnet(nn.Module):
         self.apply(weight_init)
     
     def forward(self, forward_rep, backward_rep):
+        f_len, b_len = torch.norm(forward_rep, p=2, dim=1), torch.norm(backward_rep, p=2, dim=1)
         if self.use_forward_backward_cross:
             combined1 = combined2 = combined_output = None
             for layer in self.attention_layers:
@@ -240,8 +241,8 @@ class BidirectionalAttentionMixnet(nn.Module):
                 combined = combined + layer(combined) if (isinstance(layer, SelfAttention) and self.use_res) else layer(combined)
             combined_output = torch.cat((combined[:, 0, :], combined[:, 1, :]), dim=-1)
         else:
-            forward_rep = forward_rep + backward_rep
-            backward_rep, combined = forward_rep, None
+            forward_rep = backward_rep = F.normalize(forward_rep, p=2, dim=1) + F.normalize(backward_rep, p=2, dim=1)
+            combined = None
             for layer in self.attention_layers:
                 if isinstance(layer, CrossAttention):
                     combined = layer(backward_rep.unsqueeze(1), forward_rep.unsqueeze(1)) if combined is None else layer(combined, forward_rep.unsqueeze(1))
@@ -270,7 +271,7 @@ class BidirectionalAttentionMixnet(nn.Module):
             return self.output(combined_output), combined_output
         if self.use_feature_norm:
             combined_output = combined_output / combined_output.norm(p=2, dim=1, keepdim=True)
-        return self.output(combined_output)
+        return self.output(combined_output).squeeze() * f_len * b_len
     
     
 class MixNetRepresentation(torch.nn.Module):
