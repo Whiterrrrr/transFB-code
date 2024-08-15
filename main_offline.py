@@ -358,6 +358,7 @@ elif config["algorithm"] in ("vcfb", "mcfb", "vcalfb", "mcalfb"):
         alpha=config["alpha"],
         target_conservative_penalty=config["target_conservative_penalty"],
         lagrange=config["lagrange"],
+        name=config["name"],
     )
 
     replay_buffer = FBReplayBuffer(
