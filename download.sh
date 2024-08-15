@@ -1,7 +1,7 @@
 #!/bin/bash
 
 S3_URL=https://dl.fbaipublicfiles.com/exorl
-DOMAIN=${1:-walker}
+DOMAIN=${1:-jaco}
 ALGO=${2:-proto}
 
 DIR=./datasets/${DOMAIN}

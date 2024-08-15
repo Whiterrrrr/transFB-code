@@ -27,6 +27,7 @@ from agents.base import OfflineReplayBuffer
 from agents.ifb.agent import IFB
 from agents.cfb.agent import CFB
 from agents.calfb.agent import CalFB
+from agents.calexp.agent import Calexp
 from agents.cexp.agent import CEXP
 from agents.exp.agent import EXP
 
@@ -259,7 +260,7 @@ class OfflineRLWorkspace(AbstractWorkspace):
         best_model_path = None
 
         # sample set transitions for z inference
-        if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, EXP) or isinstance(agent, IFB):
+        if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, EXP) or isinstance(agent, IFB) or isinstance(agent, Calexp):
             if self.domain_name == "point_mass_maze":
                 self.goal_states = {}
                 for task, goal_state in point_mass_maze_goals.items():
@@ -277,7 +278,7 @@ class OfflineRLWorkspace(AbstractWorkspace):
         for i in tqdm(range(self.learning_steps + 1)):
 
             batch = replay_buffer.sample(agent.batch_size)
-            if isinstance(agent, CEXP) or isinstance(agent, EXP):
+            if isinstance(agent, CEXP) or isinstance(agent, EXP) or isinstance(agent, Calexp):
                 batch_rand = replay_buffer.sample(agent.batch_size)
                 train_metrics = agent.update(batch=batch, batch_rand=batch_rand, step=i)
             else:
@@ -334,7 +335,7 @@ class OfflineRLWorkspace(AbstractWorkspace):
             metrics: dict of metrics
         """
 
-        if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, EXP) or isinstance(agent, IFB):
+        if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, EXP) or isinstance(agent, IFB) or isinstance(agent, Calexp):
             zs = {}
             metrics = {}
             if self.domain_name == "point_mass_maze":
@@ -358,7 +359,7 @@ class OfflineRLWorkspace(AbstractWorkspace):
 
                 timestep = self.env.reset()
                 while not timestep.last():
-                    if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, EXP) or isinstance(agent, IFB):
+                    if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, EXP) or isinstance(agent, IFB) or isinstance(agent, Calexp):
                         action, _ = agent.act(
                             timestep.observation["observations"],
                             task=zs[task],
@@ -388,7 +389,7 @@ class OfflineRLWorkspace(AbstractWorkspace):
         # log mean task performance
         metrics["eval/task_reward_iqm"] = mean_task_performance / len(tasks)
 
-        if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, EXP) or isinstance(agent, IFB):
+        if isinstance(agent, FB) or isinstance(agent, CEXP) or isinstance(agent, EXP) or isinstance(agent, IFB) or isinstance(agent, Calexp):
             agent.std_dev_schedule = self.train_std
 
         return metrics
