@@ -423,9 +423,9 @@ class Calexp(AbstractAgent):
             target_Fmu = self.Operate.forward_mu_target(next_observations)
             target_Mmu = self.Operate.operator_target(target_Fmu, target_B).squeeze()
         Fmu = self.Operate.forward_mu(observations)
-        Mmu = self.Operate.operator_target(Fmu, B_rand).squeeze()
+        Mmu = self.Operate.operator(Fmu, B_rand).squeeze()
         fmub_off_diag_loss = (Mmu - discounts * target_Mmu).pow(2).mean()
-        Mmu_next = self.Operate.operator_target(Fmu, B_next).squeeze()
+        Mmu_next = self.Operate.operator(Fmu, B_next).squeeze()
         fmub_diag_loss = -2.0 * Mmu_next.mean()
         fmub_loss = fmub_off_diag_loss + fmub_diag_loss
         total_loss = total_loss + fmub_loss
@@ -1014,7 +1014,7 @@ class Calexp(AbstractAgent):
             + torch.logsumexp(cql_cat_Q2, dim=0).mean()
         )
         
-        Vmu = 2 * self.Operate.operator_target(Fmu, zs).squeeze().detach()
+        Vmu = 2 * self.Operate.operator(Fmu, zs).squeeze().detach()
         
         if self.use_distribution:
             Q_dist = self.Operate.operator(
