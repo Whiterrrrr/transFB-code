@@ -34,7 +34,6 @@ parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--alpha", type=float, default=1)
 parser.add_argument("--z_dimension", type=int, default=50)
 parser.add_argument("--weighted_cml", type=bool, default=False)
-parser.add_argument("--ood_action_weight", type=float, default=0.5)
 parser.add_argument("--train_task", type=str, default="")
 parser.add_argument("--dataset_transitions", type=int, default=100000)
 parser.add_argument("--eval_tasks", nargs="+", required=True, default=["flip", "run"])
@@ -358,7 +357,6 @@ elif config["algorithm"] in ("vcfb", "mcfb", "vcalfb", "mcalfb"):
         alpha=config["alpha"],
         target_conservative_penalty=config["target_conservative_penalty"],
         lagrange=config["lagrange"],
-        name=config["name"],
     )
 
     replay_buffer = FBReplayBuffer(
@@ -575,7 +573,6 @@ elif config["algorithm"] == "iexp":
         b_learning_rate_coefficient=config["b_learning_rate_coefficient"],
         g_learning_rate_coefficient=config["g_learning_rate_coefficient"],
         orthonormalisation_coefficient=config["orthonormalisation_coefficient"],
-        q_coefficient=config["q_coefficient"],
         discount=config["discount"],
         batch_size=config["batch_size"],
         z_mix_ratio=config["z_mix_ratio"],
@@ -583,18 +580,12 @@ elif config["algorithm"] == "iexp":
         std_dev_clip=config["std_dev_clip"],
         std_dev_schedule=config["std_dev_schedule"],
         tau=config["tau"],
-        alpha=config["alpha"],
         device=config["device"],
         name=config["name"],
-        use_q_loss=config['use_q_loss'],
-        use_fed=config['use_fed'],
-        use_VIB=config['use_VIB'],
         use_2branch=config['use_2branch'],
         use_cross_attention=config['use_cross_attention'],
-        f_loss_coefficient=config['f_loss_coefficient'],
-        asymmetric_l2_tau=config['asymmetric_l2_tau'],
-        use_AWAR = config['use_AWAR'],
-        # use_B_sa_pairs = config['use_B_sa_pairs']
+        iql_tau=config['iql_tau'],
+        # use_AWAR = config['use_AWAR'],
     )
     
     replay_buffer = FBReplayBuffer(

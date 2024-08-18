@@ -1,14 +1,15 @@
 # training/eval
-batch_size: 128
+batch_size: 2048
 max_buffer_episodes: 5000
 z_inference_steps: 10000
 discount: 0.98
 eval_frequency: 10000  # how often to evaluate the agent in learning steps
 eval_rollouts: 10  # how many rollouts to average over when evaluating
+project: "walker-rnd"
 
 # forward-backward
-name: "test"
-save_dir: "/home/tsinghuaair/zhengkx/conservative-world-models/agents/iexp/saved_models"
+name: "iexp critic8e-5 actor5e-5"
+save_dir: "./agents/iexp/walker"
 preprocessor_hidden_dimension: 1024
 preprocessor_hidden_layers: 2
 preprocessor_output_dimension: 512
@@ -31,21 +32,13 @@ backward_hidden_layers: 3
 backward_activation: "relu"
 
 use_trans: true
-use_kan: false
-kan_config:
-  width: [100, 512, 128, 1]
-  grid: 5 
-  k: 3
-  noise_scale: 0.1
-  noise_scale_base: 0.1
-
 use_res: false
 use_fed: false
 use_VIB: false
 use_2branch: false
-use_q_loss: false
+use_linear_res: false
+use_feature_norm: false
 use_AWAR: false
-q_coefficient: 1
 operator_hidden_dimension: 512
 operator_hidden_layers: 3
 operator_activation: "relu"
@@ -63,7 +56,7 @@ actor_hidden_layers: 2
 actor_activation: "relu"
 
 seed: 42
-critic_learning_rate: 0.000001
+critic_learning_rate: 0.00008
 actor_learning_rate: 0.00005
 learning_steps: 1000000
 f_loss_coefficient: 5
@@ -75,7 +68,5 @@ gaussian_actor: false
 std_dev_clip: 0.3
 std_dev_schedule: "0.2"
 std_dev_eval: 0.05
-tau: 0.01
-asymmetric_l2_tau: 0.9
-
-
+tau: 0.001
+iql_tau: 0.9

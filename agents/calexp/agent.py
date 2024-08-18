@@ -416,7 +416,7 @@ class Calexp(AbstractAgent):
         step: int,
     ) -> Dict[str, float]:
 
-        total_loss, metrics, F1, F2, B_next, B_rand, target_B, _, actor_std_dev, dormant_indices, auxiliary_loss = self._update_operate_inner(
+        total_loss, metrics, F1, F2, B_next, B_rand, target_B, _, actor_std_dev, dormant_indices, auxiliary_loss, M1_rand, M2_rand = self._update_operate_inner(
             observations, observations_rand ,actions, next_observations, discounts, zs, step
         )
         with torch.no_grad():
@@ -440,9 +440,11 @@ class Calexp(AbstractAgent):
                 F1=F1,
                 F2=F2,
                 discount=discounts,
-                B_next=B_next,
+                B_rand=B_rand,
                 M_pealty_coefficient=self.M_pealty_coefficient,
-                Fmu = Fmu
+                Fmu=Fmu,
+                M1_next=M1_rand,
+                M2_next=M2_rand,
             )
 
             alpha, alpha_metrics = self._tune_alpha(
@@ -752,7 +754,7 @@ class Calexp(AbstractAgent):
         if self.use_dr3:
             metrics["train/dr3_reg"] = dr3_implict_reg.item()
         return total_loss, metrics, \
-            F1, F2, B_next, B_rand, target_B, off_diagonal, actor_std_dev, dormant_indices, auxiliary_loss
+            F1, F2, B_next, B_rand, target_B, off_diagonal, actor_std_dev, dormant_indices, auxiliary_loss, M1_rand, M2_rand
 
     def update_actor(
         self, observation: torch.Tensor, z: torch.Tensor, discounts: torch.Tensor, step: int
@@ -901,9 +903,11 @@ class Calexp(AbstractAgent):
         F1: torch.Tensor,
         F2: torch.Tensor,
         discount: torch.Tensor,
-        B_next: torch.Tensor,
+        B_rand: torch.Tensor,
         M_pealty_coefficient: float = 1.0,
         Fmu = None,
+        M1_next = None,
+        M2_next = None
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         
         with torch.no_grad():
@@ -987,64 +991,82 @@ class Calexp(AbstractAgent):
         repeated_zs = zs.repeat(self.total_action_samples, 1, 1).reshape(
             self.total_action_samples * self.batch_size, -1
         )
-
-        if self.use_distribution:
-            cql_cat_Q_dist = self.Operate.operator(
-                torch.cat((cat_F1, cat_F2), dim=0),
-                torch.cat((repeated_zs, repeated_zs), dim=0)
-            ).squeeze()
-            cql_cat_Q1_dist, cql_cat_Q2_dist = cql_cat_Q_dist[:repeated_zs.size(0)], cql_cat_Q_dist[repeated_zs.size(0):]
-            cql_cat_Q1, cql_cat_Q2 = torch.sum(cql_cat_Q1_dist * self.support, dim=1), torch.sum(cql_cat_Q2_dist * self.support, dim=1)
-        else:
-            if not self.use_dr3:
-                cql_cat_Q = self.Operate.operator(
-                    torch.cat((cat_F1, cat_F2), dim=0),
-                    torch.cat((repeated_zs, repeated_zs), dim=0)
-                ).squeeze()
-            else:
-                cql_cat_Q, _ = self.Operate.operator(
-                    torch.cat((cat_F1, cat_F2), dim=0),
-                    torch.cat((repeated_zs, repeated_zs), dim=0)
-                )
-                cql_cat_Q = cql_cat_Q.squeeze()
-            cql_cat_Q1, cql_cat_Q2 = cql_cat_Q[:repeated_zs.size(0)], cql_cat_Q[repeated_zs.size(0):]
+        repeated_B_rand = B_rand.repeat(self.total_action_samples, 1, 1).reshape(
+            self.total_action_samples * self.batch_size, -1
+        )
+        cml_cat_M = self.Operate.operator(
+            torch.cat((cat_F1, cat_F2), dim=0),
+            torch.cat((repeated_B_rand, repeated_B_rand), dim=0)
+        ).squeeze()
+        cml_cat_M1, cml_cat_M2 = cml_cat_M[:repeated_zs.size(0)], cml_cat_M[repeated_zs.size(0):]
+        cml_logsumexp = torch.logsumexp(cml_cat_M1, dim=0) + torch.logsumexp(
+            cml_cat_M2, dim=0
+        )
+        # if self.use_distribution:
+        #     cql_cat_Q_dist = self.Operate.operator(
+        #         torch.cat((cat_F1, cat_F2), dim=0),
+        #         torch.cat((repeated_zs, repeated_zs), dim=0)
+        #     ).squeeze()
+        #     cql_cat_Q1_dist, cql_cat_Q2_dist = cql_cat_Q_dist[:repeated_zs.size(0)], cql_cat_Q_dist[repeated_zs.size(0):]
+        #     cql_cat_Q1, cql_cat_Q2 = torch.sum(cql_cat_Q1_dist * self.support, dim=1), torch.sum(cql_cat_Q2_dist * self.support, dim=1)
+        # else:
+        #     if not self.use_dr3:
+        #         cql_cat_Q = self.Operate.operator(
+        #             torch.cat((cat_F1, cat_F2), dim=0),
+        #             torch.cat((repeated_zs, repeated_zs), dim=0)
+        #         ).squeeze()
+        #     else:
+        #         cql_cat_Q, _ = self.Operate.operator(
+        #             torch.cat((cat_F1, cat_F2), dim=0),
+        #             torch.cat((repeated_zs, repeated_zs), dim=0)
+        #         )
+        #         cql_cat_Q = cql_cat_Q.squeeze()
+        #     cql_cat_Q1, cql_cat_Q2 = cql_cat_Q[:repeated_zs.size(0)], cql_cat_Q[repeated_zs.size(0):]
             
-        cql_logsumexp_Q = (
-            torch.logsumexp(cql_cat_Q1, dim=0).mean()
-            + torch.logsumexp(cql_cat_Q2, dim=0).mean()
-        )
+        # cql_logsumexp_Q = (
+        #     torch.logsumexp(cql_cat_Q1, dim=0).mean()
+        #     + torch.logsumexp(cql_cat_Q2, dim=0).mean()
+        # )
         
-        Vmu = 2 * self.Operate.operator(Fmu, zs).squeeze().detach()
+        Mmu = 2 * self.Operate.operator(Fmu, B_rand).squeeze().detach()
         
-        if self.use_distribution:
-            Q_dist = self.Operate.operator(
-                torch.cat((F1, F2), dim=0),
-                torch.cat((zs, zs), dim=0)
-            ).squeeze()
-            Q1_dist, Q2_dist = Q_dist[:zs.size(0)], Q_dist[zs.size(0):]
-            Q1, Q2 = torch.sum(Q1_dist * self.support, dim=1), torch.sum(Q2_dist * self.support, dim=1)
-        else:
-            if not self.use_dr3:
-                Q = self.Operate.operator_target(
-                    torch.cat((F1, F2), dim=0), 
-                    torch.cat((zs, zs), dim=0)
-                ).squeeze() 
-            else:
-                Q, _ = self.Operate.operator_target(
-                    torch.cat((F1, F2), dim=0), 
-                    torch.cat((zs, zs), dim=0)
-                )
-                Q = Q.squeeze()
-            Q1, Q2 = Q[:zs.size(0)], Q[zs.size(0):]
+        # if self.use_distribution:
+        #     Q_dist = self.Operate.operator(
+        #         torch.cat((F1, F2), dim=0),
+        #         torch.cat((zs, zs), dim=0)
+        #     ).squeeze()
+        #     Q1_dist, Q2_dist = Q_dist[:zs.size(0)], Q_dist[zs.size(0):]
+        #     Q1, Q2 = torch.sum(Q1_dist * self.support, dim=1), torch.sum(Q2_dist * self.support, dim=1)
+        # else:
+        #     if not self.use_dr3:
+        #         Q = self.Operate.operator_target(
+        #             torch.cat((F1, F2), dim=0), 
+        #             torch.cat((zs, zs), dim=0)
+        #         ).squeeze() 
+        #     else:
+        #         Q, _ = self.Operate.operator_target(
+        #             torch.cat((F1, F2), dim=0), 
+        #             torch.cat((zs, zs), dim=0)
+        #         )
+        #         Q = Q.squeeze()
+        #     Q1, Q2 = Q[:zs.size(0)], Q[zs.size(0):]
         
+        # conservative_penalty = (
+        #     torch.maximum(cql_logsumexp_Q, Vmu).mean() - (Q1 + Q2).mean()
+        # )
         conservative_penalty = (
-            torch.maximum(cql_logsumexp_Q, Vmu).mean() - (Q1 + Q2).mean()
+            torch.maximum(cml_logsumexp, Mmu).mean() - (M1_next + M2_next).mean()
         )
         
+        # metrics = {
+        #     "train/cql_penalty": conservative_penalty.item(),
+        #     "train/cql_cat_Q1": cql_cat_Q1.mean().item(),
+        #     "train/cql_cat_Q2": cql_cat_Q2.mean().item(),
+        # }       ]
         metrics = {
-            "train/cql_penalty": conservative_penalty.item(),
-            "train/cql_cat_Q1": cql_cat_Q1.mean().item(),
-            "train/cql_cat_Q2": cql_cat_Q2.mean().item(),
+            "train/cql_penalty_M": conservative_penalty.item(),
+            "train/cql_cat_M1": cml_cat_M1.mean().item(),
+            "train/cql_cat_M2": cml_cat_M2.mean().item(),
         }
         return conservative_penalty, metrics
         

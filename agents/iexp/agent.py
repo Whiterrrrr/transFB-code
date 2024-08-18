@@ -1,21 +1,18 @@
 import math
 from pathlib import Path
 from typing import Tuple, Dict, Optional
-
 import torch
-import torch.nn.functional as F
 import numpy as np
-
 from agents.iexp.module import MixNetRepresentation
 from agents.fb.models import ActorModel
 from agents.base import AbstractAgent, Batch, AbstractGaussianActor
 from agents.utils import schedule
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 
 def asymmetric_l2_loss(u, tau):
     return torch.mean(torch.abs(tau - (u < 0).float()) * u**2)
 
 class IEXP(AbstractAgent):
-
     def __init__(
         self,
         observation_length: int,
@@ -52,11 +49,9 @@ class IEXP(AbstractAgent):
         actor_activation: str, 
         actor_learning_rate: float,
         critic_learning_rate: float,
-        f_loss_coefficient: float,
         b_learning_rate_coefficient: float,
         g_learning_rate_coefficient: float,
         orthonormalisation_coefficient: float,
-        q_coefficient: float,
         discount: float,
         batch_size: int,
         z_mix_ratio: float,
@@ -64,16 +59,15 @@ class IEXP(AbstractAgent):
         std_dev_clip: float,
         std_dev_schedule: str,
         tau: float,
-        asymmetric_l2_tau: float,
-        alpha: float,
         device: torch.device,
         name: str,
-        use_q_loss,
-        use_fed,
-        use_VIB,
-        use_2branch,
         use_cross_attention = False,
-        use_AWAR = False,
+        use_2branch: bool = False,
+        use_feature_norm=False,
+        use_linear_res=False,
+        use_forward_backward_cross=False,
+        iql_tau = 0.9,
+        use_fed = False
     ):
         super().__init__(
             observation_length=observation_length,
@@ -102,6 +96,7 @@ class IEXP(AbstractAgent):
             orthonormalisation_coefficient=orthonormalisation_coefficient,
             discount=discount,
             device=device,
+            use_trasnformer=use_trans,
             trans_dimension=trans_hidden_dimension,
             num_attention_heads=num_attention_heads,
             n_attention_layers=n_attention_layers,
@@ -113,10 +108,12 @@ class IEXP(AbstractAgent):
             backward_preporcess_activation=backward_preprocess_activation,
             backward_preporcess_output_dim=backward_preprocess_output_dimension,
             use_res=use_res,
-            use_fed=use_fed,
-            use_VIB=use_VIB,
+            use_2branch=use_2branch,
+            use_feature_norm=use_feature_norm,
             use_cross_attention=use_cross_attention,
-            use_2branch = use_2branch,
+            use_linear_res=use_linear_res,
+            use_forward_backward_cross=use_forward_backward_cross,
+            use_fed=use_fed
         )
 
         self.actor = ActorModel(
@@ -139,83 +136,56 @@ class IEXP(AbstractAgent):
         self.encoder = torch.nn.Identity()
         self.augmentation = torch.nn.Identity()
 
-        # load weights into target networks
         self.Operate.forward_representation_target.load_state_dict(
             self.Operate.forward_representation.state_dict()
-        )
-        self.Operate.state_forward_representation_target.load_state_dict(
-            self.Operate.state_forward_representation.state_dict()
         )
         self.Operate.backward_representation_target.load_state_dict(
             self.Operate.backward_representation.state_dict()
         )
-        self.Operate.operator.load_state_dict(
-            self.Operate.operator_target.state_dict()
-        )
-        self.alpha = alpha
-        self.use_q_loss=use_q_loss
-        self.use_VIB = use_VIB
-        
-        # optimisers
-        self.Operate_optimizer = torch.optim.AdamW(
-            [
-                {"params": self.Operate.forward_representation.parameters()},
-                {"params": self.Operate.state_forward_representation.parameters()},
-                {"params": self.Operate.backward_representation.parameters(), "lr": critic_learning_rate * b_learning_rate_coefficient,},
-                {"params": self.Operate.operator.parameters(), "lr": critic_learning_rate * g_learning_rate_coefficient,},
-            ],
-            lr=critic_learning_rate,
-        )      
-        for param in self.Operate.parameters():
-            param.data = param.data.to(torch.float32)
-            if param.requires_grad:
-                if param.grad is not None:
-                    param.grad = param.grad.to(torch.float32)
-                
-        for param in self.actor.parameters():
-            param.data = param.data.to(torch.float32)
-            if param.requires_grad:
-                if param.grad is not None:
-                    param.grad = param.grad.to(torch.float32)
-        # self.Operate_optimizer_Fgroup = torch.optim.AdamW(
-        #     [
-        #         {"params": self.Operate.forward_representation.parameters()},
-        #         {"params": self.Operate.backward_representation.parameters(), "lr": critic_learning_rate * b_learning_rate_coefficient,},
-        #         {"params": self.Operate.operator.parameters(), "lr": critic_learning_rate * g_learning_rate_coefficient,},
-        #     ],
-        #     lr=critic_learning_rate,
-        # )
-        # self.Operate_optimizer_SFgroup = torch.optim.AdamW(
-        #     [
-        #         {"params": self.Operate.state_forward_representation.parameters()},
-        #         {"params": self.Operate.backward_representation.parameters(), "lr": critic_learning_rate * b_learning_rate_coefficient,},
-        #         {"params": self.Operate.operator.parameters(), "lr": critic_learning_rate * g_learning_rate_coefficient,},
-        #     ],
-        #     lr=critic_learning_rate,
-        # )
-        # self.F_optimizer = torch.optim.AdamW(params=self.Operate.forward_representation.parameters(), lr=critic_learning_rate)
-        # self.SF_optimizer = torch.optim.AdamW(params=self.Operate.state_forward_representation.parameters(), lr=critic_learning_rate)
-        # self.B_optimizer = torch.optim.AdamW(params=self.Operate.backward_representation.parameters(), lr=critic_learning_rate * b_learning_rate_coefficient)
-        # self.Operate_optimizer = torch.optim.AdamW(params=self.Operate.operator.parameters(), lr=critic_learning_rate * g_learning_rate_coefficient)
-        
-        self.actor_optimizer = torch.optim.AdamW(
-            self.actor.parameters(), 
-            lr=actor_learning_rate,
-            # weight_decay=0.03,
-            # betas=(0.9, 0.9),
-            # amsgrad=False
+        self.Operate.operator_target.load_state_dict(
+            self.Operate.operator.state_dict()
         )
 
+        self.use_2branch = use_2branch
+        self.use_cross_attention = use_cross_attention
         self._device = device
         self.batch_size = batch_size
         self._z_mix_ratio = z_mix_ratio
         self._tau = tau
-        self.asymmetric_l2_tau = asymmetric_l2_tau
         self._z_dimension = z_dimension
         self.std_dev_schedule = std_dev_schedule
-        self.q_coefficient = q_coefficient
-        self.f_loss_coefficient = f_loss_coefficient
-        self.use_AWAR_loss = use_AWAR
+        self.iql_tau = iql_tau
+        
+        self.Operate_optimizer = torch.optim.AdamW(
+            [
+                {"params": self.Operate.forward_representation.parameters()},
+                {"params": self.Operate.state_forward_representation.parameters()},
+                {
+                    "params": self.Operate.backward_representation.parameters(),
+                    "lr": critic_learning_rate * b_learning_rate_coefficient,
+                },
+                {
+                    "params": self.Operate.operator.parameters(),
+                    "lr": critic_learning_rate * g_learning_rate_coefficient,
+                },
+            ],
+            lr=critic_learning_rate,
+            weight_decay=0.03,
+            betas=(0.9, 0.99),
+            amsgrad=False
+        )
+        self.scheduler = CosineAnnealingWarmRestarts(self.Operate_optimizer, T_0=5, T_mult=2, eta_min=1e-5)
+        self.mixnet_optimizer = torch.optim.AdamW(
+            self.Operate.operator.parameters(),
+            lr=critic_learning_rate,
+            # weight_decay=0.03,
+            # betas=(0.9, 0.9),
+            # amsgrad=False
+        )
+        self.actor_optimizer = torch.optim.AdamW(
+            self.actor.parameters(), 
+            lr=actor_learning_rate,
+        )
         
     @torch.no_grad()
     def act(
@@ -225,20 +195,22 @@ class IEXP(AbstractAgent):
         step: int,
         sample: bool = False,
     ) -> Tuple[np.array, float]:
+  
         observation = torch.as_tensor(
             observation, dtype=torch.float32, device=self._device
         ).unsqueeze(0)
         h = self.encoder(observation)
         z = torch.as_tensor(task, dtype=torch.float32, device=self._device).unsqueeze(0)
 
+        # get action from actor
         std_dev = schedule(self.std_dev_schedule, step)
         action, _ = self.actor(h, z, std_dev, sample=sample)
 
         return action.detach().cpu().numpy()[0], std_dev
 
-
-    def update(self, batch: Batch, step: int) -> Dict[str, float]:
-        # sample zs and mix
+    def update(self, batch: Batch, batch_rand: Batch, step: int) -> Dict[str, float]:
+        mask = torch.rand(batch.observations.shape[0]) < 0.1
+        batch_rand.observations[mask] = batch.next_observations[mask]
         zs = self.sample_z(size=self.batch_size)
         perm = torch.randperm(self.batch_size)
         backward_input = batch.observations[perm]
@@ -254,27 +226,22 @@ class IEXP(AbstractAgent):
         zs[mix_indices] = mix_zs
         actor_zs = zs.clone().requires_grad_(True)
         actor_observations = batch.observations.clone().requires_grad_(True)
-        actor_actions = batch.actions.clone().requires_grad_(True)
-
-        # update forward and backward models
-        operate_metrics, V, adv = self.update_operate(
+        
+        operate_metrics = self.update_operate(
             observations=batch.observations,
-            observations_rand=batch.other_observations,
+            observations_rand=batch_rand.observations,
             next_observations=batch.next_observations,
             actions=batch.actions,
-            discounts=batch.discounts,
-            rewards=batch.rewards,
-            not_dones=batch.not_dones,
+            discounts=batch.discounts.squeeze(),
             zs=zs,
             step=step,
         )
-
-        # update target networks for forwards and backwards models
-        self.soft_update_params(
-            network=self.Operate.backward_representation,
-            target_network=self.Operate.backward_representation_target,
-            tau=self._tau,
+        actor_metrics = self.update_actor(
+            observation=actor_observations, z=actor_zs, discounts=batch.discounts, step=step
         )
+        self.scheduler.step()
+        current_lr = self.scheduler.get_last_lr()[0]
+
         self.soft_update_params(
             network=self.Operate.forward_representation,
             target_network=self.Operate.forward_representation_target,
@@ -286,21 +253,21 @@ class IEXP(AbstractAgent):
             tau=self._tau,
         )
         self.soft_update_params(
+            network=self.Operate.backward_representation,
+            target_network=self.Operate.backward_representation_target,
+            tau=self._tau,
+        )
+        self.soft_update_params(
             network=self.Operate.operator,
             target_network=self.Operate.operator_target,
             tau=self._tau,
         )
 
-        # update actor
-        actor_metrics = self.update_actor(
-            observation=actor_observations, z=actor_zs, step=step, actions=actor_actions, adv=adv
-        )
-        
         metrics = {
             **operate_metrics,
             **actor_metrics,
         }
-
+        metrics['current_lr']=current_lr 
         return metrics
 
     def update_operate(
@@ -310,17 +277,26 @@ class IEXP(AbstractAgent):
         actions: torch.Tensor,
         next_observations: torch.Tensor,
         discounts: torch.Tensor,
-        rewards: torch.tensor,
-        not_dones: torch.tensor,
         zs: torch.Tensor,
         step: int,
     ) -> Dict[str, float]:
 
-        total_loss, metrics, _, _, _, _, _, _, _, _, _, V, adv = self._update_operate_inner(
-            observations, observations_rand ,actions, next_observations, discounts, rewards, not_dones, zs, step
+        total_loss, metrics, F1, F2, B_next, B_rand, _, _, actor_std_dev = self._update_operate_inner(
+            observations, observations_rand ,actions, next_observations, discounts, zs, step
         )
 
-        return metrics, V, adv
+        self.Operate_optimizer.zero_grad(set_to_none=True)
+        total_loss.backward(retain_graph=True)
+        for param in self.Operate.parameters():
+            if param.grad is not None:
+                param.grad.data.clamp_(-1, 1)
+                
+        self.Operate_optimizer.step()        
+        metrics = {
+            **metrics,
+            "train/forward_backward_total_loss": total_loss,
+        }
+        return metrics
 
     def _update_operate_inner(
         self,
@@ -329,70 +305,54 @@ class IEXP(AbstractAgent):
         actions: torch.Tensor,
         next_observations: torch.Tensor,
         discounts: torch.Tensor,
-        rewards: torch.Tensor,
-        not_dones: torch.Tensor,
         zs: torch.Tensor,
         step: int,
     ):
         with torch.no_grad():
             actor_std_dev = schedule(self.std_dev_schedule, step)
-            cur_F1_tar, cur_F2_tar = self.Operate.forward_representation_target(observation=observations, action=actions, z=zs)
-            next_K_tar = self.Operate.state_forward_representation_target(observation=next_observations, z=zs)
+            next_actions, _ = self.actor(
+                next_observations, zs, actor_std_dev, sample=True
+            )
+            target_F1, target_F2 = self.Operate.forward_representation_target(observation=next_observations, z=zs, action=next_actions)
+            target_K = self.Operate.state_forward_representation_target(
+                observation=next_observations, z=zs
+            )
             target_B = self.Operate.backward_representation_target(observation=observations_rand)
-            target_O = self.Operate.operator_target(next_K_tar.repeat(int(target_B.shape[0] // next_K_tar.shape[0]), 1), target_B)
-            target_next_V = self.Operate.operator_target(next_K_tar, zs).squeeze()
-            target_Q = torch.min(
-                self.Operate.operator_target(cur_F1_tar, zs).squeeze(),
-                self.Operate.operator_target(cur_F2_tar, zs).squeeze(),
-            )
-            target_M = torch.min(
-                self.Operate.operator_target(cur_F1_tar, target_B),
-                self.Operate.operator_target(cur_F2_tar, target_B),
-            )
+            target_M = self.Operate.operator_target(
+                torch.cat((
+                    target_F1.repeat(int(target_B.shape[0] // target_F1.shape[0]), 1), 
+                    target_F2.repeat(int(target_B.shape[0] // target_F2.shape[0]), 1)), dim=0), 
+                torch.cat((target_B, target_B), dim=0)
+            ).squeeze()
+            target_M = torch.min(target_M[:target_B.size(0)], target_M[target_B.size(0):])
+            target_O = self.Operate.operator_target(target_K, target_B).squeeze()
             
         F1, F2 = self.Operate.forward_representation(observations, actions, zs)
-        K = self.Operate.state_forward_representation(observations, zs)
-        V = self.Operate.operator(K, zs).squeeze()
-        Q1, Q2 = [self.Operate.operator(Fi, zs).squeeze() for Fi in [F1, F2]]
-        B_next = self.Operate.backward_representation(next_observations)
-        B_rand = self.Operate.backward_representation(observations_rand)
-        cov = torch.matmul(B_next.T, B_next) / B_next.shape[0]
-        inv_cov = torch.inverse(cov)
-        implicit_reward = (torch.matmul(B_next, inv_cov) * zs).sum(dim=1) 
-        if not self.use_VIB:
-            M1_next = self.Operate.operator(F1, B_next)
-            M2_next = self.Operate.operator(F2, B_next)
-            M1_rand = self.Operate.operator(F1.repeat(int(B_rand.shape[0] // F1.shape[0]), 1), B_rand)
-            M2_rand = self.Operate.operator(F2.repeat(int(B_rand.shape[0] // F2.shape[0]), 1), B_rand)
-            O_rand = self.Operate.operator(K.repeat(int(B_rand.shape[0] // K.shape[0]), 1), B_rand)
-            
-        # fb loss
+        B = self.Operate.backward_representation(torch.cat((next_observations, observations_rand), dim=0))
+        B_next, B_rand = B[:next_observations.size(0)], B[next_observations.size(0):]
+        K = self.Operate.state_forward_representation_target(observation=observations, z=zs)
+        O = self.Operate.operator_target(K, B_rand).squeeze()
+        M_next = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((B_next, B_next), dim=0)).squeeze()
+        M_rand = self.Operate.operator(
+            torch.cat((
+                F1.repeat(int(B_rand.shape[0] // F1.shape[0]), 1), 
+                F2.repeat(int(B_rand.shape[0] // F2.shape[0]), 1)), dim=0), 
+            torch.cat((B_rand, B_rand), dim=0)
+        ).squeeze()
+        M1_next, M2_next = M_next[:B_next.size(0)],  M_next[B_next.size(0):]
+        M1_rand, M2_rand = M_rand[:B_rand.size(0)], M_rand[B_rand.size(0):]
+        M_rand = torch.min(M1_rand, M2_rand)
         fb_off_diag_loss = 0.5 * sum(
-            (M - discounts.repeat(int(B_rand.shape[0] // K.shape[0]), 1) * target_O).pow(2).mean()
+            (M - discounts * target_O).pow(2).mean()
             for M in [M1_rand, M2_rand]
         )
 
         fb_diag_loss = -sum(M.mean() for M in [M1_next, M2_next])
         fb_loss = fb_diag_loss + fb_off_diag_loss
-        total_loss = fb_loss * self.f_loss_coefficient
-        
-        # kb loss
-        ado = target_M - O_rand
-        kb_loss = asymmetric_l2_loss(ado, self.asymmetric_l2_tau)
-        total_loss += kb_loss * self.f_loss_coefficient
-        
-        adv = target_Q - V
-        if self.use_q_loss:
-            # q loss
-            targets = implicit_reward.detach() + discounts.repeat(int(B_rand.shape[0] // K.shape[0]), 1).squeeze() * target_next_V.detach()
-            q_loss = sum(F.mse_loss(q, targets) for q in [Q1, Q2]) / 2
-            total_loss += q_loss * self.q_coefficient
             
-            # v loss
-            v_loss = asymmetric_l2_loss(adv, self.asymmetric_l2_tau)
-            total_loss += v_loss * self.q_coefficient
+        adv_fb = M_rand.detach() - O
+        vb_loss = asymmetric_l2_loss(adv_fb, self.iql_tau)
 
-        # --- orthonormalisation loss ---
         covariance = torch.matmul(B_next, B_next.T)
         I = torch.eye(*covariance.size(), device=self._device)  # next state = s_{t+1}
         off_diagonal = ~I.bool()  # future states =/= s_{t+1}
@@ -401,106 +361,67 @@ class IEXP(AbstractAgent):
         ortho_loss = self.Operate.orthonormalisation_coefficient * (
             ortho_loss_diag + ortho_loss_off_diag
         )
-        total_loss += ortho_loss
 
-        self.Operate_optimizer.zero_grad(set_to_none=True)
-        total_loss.backward()
-        for param in self.Operate.parameters():
-            if param.grad is not None:
-                param.grad.data.clamp_(-1, 1)
-        self.Operate_optimizer.step()
-
-        if self.use_q_loss:
-            metrics = {
-                "train/forward_backward_fb_diag_loss": fb_diag_loss,
-                "train/forward_backward_fb_off_diag_loss": fb_off_diag_loss,
-                "train/fb_loss": fb_loss,
-                "train/kb_loss": kb_loss,
-                "train/q_loss": q_loss,
-                "train/v_loss": v_loss,
-                "train/total_loss": total_loss,
-                "train/ortho_diag_loss": ortho_loss_diag,
-                "train/ortho_off_diag_loss": ortho_loss_off_diag,
-                "train/M": M1_rand.mean().item(),
-                "train/O": O_rand.mean().item(),
-                "train/F": F1.mean().item(),
-                "train/F_norm1": torch.mean(torch.norm(F1, p=1, dim=1)).item(),
-                "train/B": B_next.mean().item(),
-                "train/B_norm1": torch.mean(torch.norm(B_next, p=1, dim=1)).item(),
-                "train/B_var": B_next.var(dim=1).mean().item(),
-                "train/Q1": Q1.mean().item(),
-                "train/Q2": Q2.mean().item(),
-                "train/V": V.mean().item(),
-                "train/next_V": target_next_V.mean().item(),
-                "train/implicit_reward": implicit_reward.mean().item(),
-            }
-        else:
-            metrics = {
-                "train/forward_backward_fb_diag_loss": fb_diag_loss,
-                "train/forward_backward_fb_off_diag_loss": fb_off_diag_loss,
-                "train/fb_loss": fb_loss,
-                "train/kb_loss": kb_loss,
-                "train/total_loss": total_loss,
-                "train/ortho_diag_loss": ortho_loss_diag,
-                "train/ortho_off_diag_loss": ortho_loss_off_diag,
-                "train/M": M1_rand.mean().item(),
-                "train/O": O_rand.mean().item(),
-                "train/F": F1.mean().item(),
-                "train/F_norm1": torch.mean(torch.norm(F1, p=1, dim=1)).item(),
-                "train/B": B_next.mean().item(),
-                "train/B_norm1": torch.mean(torch.norm(B_next, p=1, dim=1)).item(),
-                "train/B_var": B_next.var(dim=1).mean().item(),
-                "train/Q1": Q1.mean().item(),
-                "train/Q2": Q2.mean().item(),
-                "train/V": V.mean().item(),
-                "train/next_V": target_next_V.mean().item(),
-                "train/implicit_reward": implicit_reward.mean().item(),
-            }
-
+        total_loss = fb_loss + vb_loss + ortho_loss
+        metrics = {
+            "train/forward_backward_total_loss": total_loss,
+            "train/forward_backward_vb_loss": vb_loss,
+            "train/forward_backward_fb_loss": fb_loss,
+            "train/forward_backward_fb_diag_loss": fb_diag_loss,
+            "train/forward_backward_fb_off_diag_loss": fb_off_diag_loss,
+            "train/ortho_diag_loss": ortho_loss_diag,
+            "train/ortho_off_diag_loss": ortho_loss_off_diag,
+            "train/target_O": target_O.mean().item(),
+            "train/target_M": target_M.mean().item(),
+            "train/M_next": M_next.mean().item(),
+            "train/M_rand": M_rand.mean().item(),
+            "train/K": K.mean().item(),
+            "train/F1": F1.mean().item(),
+            "train/F2": F2.mean().item(),
+            "train/target_K": target_K.mean().item(),
+            "train/target_F1": target_F1.mean().item(),
+            "train/target_F2": target_F2.mean().item(),
+            "train/F1_norm1": torch.mean(torch.norm(F1, p=1, dim=1)).item(),
+            "train/F2_norm1": torch.mean(torch.norm(F2, p=1, dim=1)).item(),
+            "train/target_F1_norm1": torch.mean(torch.norm(target_F1, p=1, dim=1)).item(),
+            "train/target_F2_norm1": torch.mean(torch.norm(target_F2, p=1, dim=1)).item(),
+            "train/B_rand": B_rand.mean().item(),
+            "train/B_next": B_next.mean().item(),
+            "train/target_B": target_B.mean().item(),
+            "train/B_rand_norm1": torch.mean(torch.norm(B_rand, p=1, dim=1)).item(),
+            "train/B_next_norm1": torch.mean(torch.norm(B_next, p=1, dim=1)).item(),
+            "train/target_B_norm1": torch.mean(torch.norm(target_B, p=1, dim=1)).item(),
+            "train/B_rand_var": B_rand.var(dim=1).mean().item(),
+            "train/B_next_var": B_next.var(dim=1).mean().item(),
+            "train/target_B_var": target_B.var(dim=1).mean().item(),
+        }
         return total_loss, metrics, \
-               F1, F2, B_next, B_rand, M1_next, M2_next, target_B, off_diagonal, actor_std_dev, V, adv
+            F1, F2, B_next, B_rand, target_B, off_diagonal, actor_std_dev
 
     def update_actor(
-        self, observation: torch.Tensor, z: torch.Tensor, step: int, actions: torch.Tensor, adv: torch.Tensor
+        self, observation: torch.Tensor, z: torch.Tensor, discounts: torch.Tensor, step: int
     ) -> Dict[str, float]:
 
         std = schedule(self.std_dev_schedule, step)
-        policy_out, action_dist = self.actor(observation, z, std, sample=True)
-        
-        # with torch.no_grad():
-        
+        action, action_dist = self.actor(observation, z, std, sample=True)
+
+        F1, F2 = self.Operate.forward_representation(observation=observation, z=z, action=action)
+
+        Q = self.Operate.operator_target(torch.cat((F1, F2), dim=0), torch.cat((z, z), dim=0)).squeeze() 
+        Q = torch.min(Q[:z.size(0)], Q[z.size(0):])
+        actor_loss = -Q
+
         if (
             type(self.actor.actor)  # pylint: disable=unidiomatic-typecheck
             == AbstractGaussianActor
         ):
-            # add an entropy regularisation term
-            log_prob = action_dist.log_prob(policy_out).sum(-1)
-            actor_loss += 0.1 * log_prob  # NOTE: currently hand-coded weight!
+            log_prob = action_dist.log_prob(action).sum(-1)
+            actor_loss += 0.1 * log_prob
             mean_log_prob = log_prob.mean().item()
         else:
             mean_log_prob = 0.0
-            
-        if self.use_AWAR_loss:
-            with torch.no_grad():
-                F1, F2 = self.Operate.forward_representation(
-                    observation=observation, z=z, action=policy_out
-                )
-                actor_Q = torch.min(
-                    self.Operate.operator(F1, z).squeeze(),
-                    self.Operate.operator(F2, z).squeeze(),
-                )
-            bc_losses = torch.sum((policy_out - actions)**2, dim=1)
-            exp_adv = torch.exp(self.alpha * adv.detach()).clamp(max=1e2)
-            actor_loss = torch.mean(exp_adv * bc_losses)
-        else:
-            F1, F2 = self.Operate.forward_representation(
-                observation=observation, z=z, action=policy_out
-            )
-            actor_Q = torch.min(
-                self.Operate.operator(F1, z).squeeze(),
-                self.Operate.operator(F2, z).squeeze(),
-            )
-            actor_loss = -actor_Q.mean()
+
+        actor_loss = actor_loss.mean()
 
         self.actor_optimizer.zero_grad(set_to_none=True)
         actor_loss.backward()
@@ -509,25 +430,19 @@ class IEXP(AbstractAgent):
         self.actor_optimizer.step()
 
         metrics = {
-            "train/adv": adv.mean().item(),
             "train/actor_loss": actor_loss.item(),
+            "train/actor_Q": Q.mean().item(),
             "train/actor_log_prob": mean_log_prob,
-            "train/actor_Q": actor_Q.mean().item(),
         }
 
         return metrics
 
     def load(self, filepath: Path):
-        """Loads model."""
         pass
 
     def sample_z(self, size: int) -> torch.Tensor:
-        gaussian_random_variable = torch.randn(
-            size, self._z_dimension, dtype=torch.float32, device=self._device
-        )
-        gaussian_random_variable = torch.nn.functional.normalize(
-            gaussian_random_variable, dim=1
-        )
+        gaussian_random_variable = torch.randn(size, self._z_dimension, dtype=torch.float32, device=self._device)
+        gaussian_random_variable = torch.nn.functional.normalize(gaussian_random_variable, dim=1)
         z = math.sqrt(self._z_dimension) * gaussian_random_variable
 
         return z
@@ -543,27 +458,15 @@ class IEXP(AbstractAgent):
             z = torch.matmul(rewards.T, z) / rewards.shape[0]  # reward-weighted average
 
         z = math.sqrt(self._z_dimension) * torch.nn.functional.normalize(z, dim=1)
-
         z = z.squeeze().cpu().numpy()
-
         return z
 
     def predict_q(
-        self, observation: torch.Tensor, z: torch.Tensor, action: torch.Tensor
+        self, observation: torch.Tensor, z: torch.Tensor, action: torch.Tensor, discounts: torch.Tensor
     ):
-
-        F1, F2 = self.Operate.forward_representation(
-            observation=observation, z=z, action=action
-        )
-
-        # get Qs from F and z
-        if not self.use_VIB:
-            Q1 = self.Operate.operator(F1, z)
-            Q2 = self.Operate.operator(F2, z)
-
-        Q = torch.min(Q1, Q2)
-
-        return Q
+        F1, F2 = self.Operate.forward_representation(observation=observation, z=z, action=action)
+        Q = self.Operate.operator_target(torch.cat((F1, F2), dim=0), torch.cat((z, z), dim=0)).squeeze() 
+        return torch.min(Q[:z.size(0)], Q[z.size(0):])
 
     @staticmethod
     def soft_update_params(
@@ -574,5 +477,3 @@ class IEXP(AbstractAgent):
             network.parameters(), target_network.parameters()
         ):
             target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
-
-    
