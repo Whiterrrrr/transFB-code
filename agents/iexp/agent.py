@@ -429,11 +429,9 @@ class IEXP(AbstractAgent):
         Q = self.Operate.operator_target(torch.cat((F1, F2), dim=0), torch.cat((z, z), dim=0)).squeeze() 
         Q = torch.min(Q[:z.size(0)], Q[z.size(0):])
         adv = (Q - V.detach())
-        exp_adv = torch.exp(self.beta * adv.detach()).clamp(max=100)
         if not self.use_diffusion:
             std = schedule(self.std_dev_schedule, step)
             action, action_dist = self.actor(observation, z, std, sample=True)
-            adv = (Q - V.detach())
             exp_adv = torch.exp(self.beta * adv.detach()).clamp(max=100)
             
             if (type(self.actor.actor) == AbstractGaussianActor):
