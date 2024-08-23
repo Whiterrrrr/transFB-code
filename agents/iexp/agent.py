@@ -443,6 +443,7 @@ class IEXP(AbstractAgent):
             bc_losses = torch.sum((action - actions)**2, dim=1)
             actor_loss =  torch.mean(exp_adv * bc_losses)
         else:
+            mean_log_prob=0.0
             actor_loss = self.actor.policy_loss(actions, observation, z, q=Q.detach(), v=V)
 
         actor_loss = actor_loss.mean()
