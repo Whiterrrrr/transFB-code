@@ -449,7 +449,8 @@ class IEXP(AbstractAgent):
         self.actor_optimizer.zero_grad(set_to_none=True)
         actor_loss.backward()
         for param in self.actor.parameters():
-            param.grad.data.clamp_(-1, 1)
+            if param.grad is not None:
+                param.grad.data.clamp_(-1, 1)
         self.actor_optimizer.step()
 
         metrics = {
