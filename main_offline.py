@@ -357,6 +357,7 @@ elif config["algorithm"] in ("vcfb", "mcfb", "vcalfb", "mcalfb"):
         alpha=config["alpha"],
         target_conservative_penalty=config["target_conservative_penalty"],
         lagrange=config["lagrange"],
+        name=config["name"],
     )
 
     replay_buffer = FBReplayBuffer(
@@ -585,7 +586,8 @@ elif config["algorithm"] == "iexp":
         use_2branch=config['use_2branch'],
         use_cross_attention=config['use_cross_attention'],
         iql_tau=config['iql_tau'],
-        # use_AWAR = config['use_AWAR'],
+        use_diffusion = config['use_diffusion'],
+        beta = config['beta'],
     )
     
     replay_buffer = FBReplayBuffer(

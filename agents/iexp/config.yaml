@@ -32,6 +32,7 @@ backward_hidden_layers: 3
 backward_activation: "relu"
 
 use_trans: true
+use_diffusion: true
 use_res: false
 use_fed: false
 use_VIB: false
@@ -70,3 +71,4 @@ std_dev_schedule: "0.2"
 std_dev_eval: 0.05
 tau: 0.001
 iql_tau: 0.9
+beta: 3

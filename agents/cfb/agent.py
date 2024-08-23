@@ -49,12 +49,6 @@ class CFB(FB):
         assert vcfb != mcfb
         self.vcfb = vcfb
         self.mcfb = mcfb
-        if self.vcfb:
-            name = "VCFB"
-        elif self.mcfb:
-            name = "MCFB"
-        else:
-            raise ValueError("Either vcfb or mcfb must be True")
 
         super().__init__(
             observation_length=observation_length,
