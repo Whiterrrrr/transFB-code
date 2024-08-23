@@ -60,7 +60,6 @@ seed: 42
 critic_learning_rate: 0.00008
 actor_learning_rate: 0.00005
 learning_steps: 1000000
-f_loss_coefficient: 5
 b_learning_rate_coefficient: 1
 g_learning_rate_coefficient: 1
 orthonormalisation_coefficient: 1
