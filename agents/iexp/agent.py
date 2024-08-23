@@ -243,7 +243,7 @@ class IEXP(AbstractAgent):
                 actions = self.actor.get_actions(observation, z)
                 observation, z = observation.repeat(actions.shape[0], 1), z.repeat(actions.shape[0], 1)
                 F1, F2 = self.Operate.forward_representation(observation, actions, z)
-                Q = self.Operate.operator_target(torch.cat((F1, F2), dim=0), torch.cat((z, z), dim=0)).squeeze()
+                Q = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((z, z), dim=0)).squeeze()
                 Q = torch.min(Q[:z.size(0)], Q[z.size(0):])
                 idx = torch.argmax(Q)
                 action = actions[idx]
@@ -361,7 +361,7 @@ class IEXP(AbstractAgent):
         F1, F2 = self.Operate.forward_representation(observations, actions, zs)
         B = self.Operate.backward_representation(torch.cat((next_observations, observations_rand), dim=0))
         B_next, B_rand = B[:next_observations.size(0)], B[next_observations.size(0):]
-        K = self.Operate.state_forward_representation_target(observation=observations, z=zs)
+        K = self.Operate.state_forward_representation(observation=observations, z=zs)
         M_next = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((B_next, B_next), dim=0)).squeeze()
         M_rand = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((B_rand, B_rand), dim=0)).squeeze()
         M1_next, M2_next = M_next[:B_next.size(0)],  M_next[B_next.size(0):]
@@ -374,7 +374,7 @@ class IEXP(AbstractAgent):
         fb_diag_loss = -sum(M.mean() for M in [M1_next, M2_next])
         fb_loss = fb_diag_loss + fb_off_diag_loss
             
-        Q, V = self.Operate.operator_target(torch.cat((F1, F2), dim=0), torch.cat((zs, zs), dim=0)).squeeze(), self.Operate.operator(K, zs).squeeze()
+        Q, V = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((zs, zs), dim=0)).squeeze(), self.Operate.operator(K, zs).squeeze()
         Q = torch.min(Q[:zs.size(0)], Q[zs.size(0):])
         adv = Q.detach() - V
         v_loss = asymmetric_l2_loss(adv, self.iql_tau)
@@ -426,7 +426,7 @@ class IEXP(AbstractAgent):
         F1, F2 = self.Operate.forward_representation(observation=observation, z=z, action=actions)
         K = self.Operate.state_forward_representation(observation=observation, z=z)
         V = self.Operate.operator(K, z).squeeze() 
-        Q = self.Operate.operator_target(torch.cat((F1, F2), dim=0), torch.cat((z, z), dim=0)).squeeze() 
+        Q = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((z, z), dim=0)).squeeze() 
         Q = torch.min(Q[:z.size(0)], Q[z.size(0):])
         adv = (Q - V.detach())
         if not self.use_diffusion:
@@ -490,7 +490,7 @@ class IEXP(AbstractAgent):
         self, observation: torch.Tensor, z: torch.Tensor, action: torch.Tensor, discounts: torch.Tensor
     ):
         F1, F2 = self.Operate.forward_representation(observation=observation, z=z, action=action)
-        Q = self.Operate.operator_target(torch.cat((F1, F2), dim=0), torch.cat((z, z), dim=0)).squeeze() 
+        Q = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((z, z), dim=0)).squeeze() 
         return torch.min(Q[:z.size(0)], Q[z.size(0):])
 
     @staticmethod
