@@ -374,7 +374,7 @@ class IEXP(AbstractAgent):
         fb_diag_loss = -sum(M.mean() for M in [M1_next, M2_next])
         fb_loss = fb_diag_loss + fb_off_diag_loss
             
-        Q, V = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((zs, zs), dim=0)).squeeze(), self.Operate.operator(K, zs).squeeze()
+        Q, V = self.Operate.operator_target(torch.cat((F1, F2), dim=0), torch.cat((zs, zs), dim=0)).squeeze(), self.Operate.operator(K, zs).squeeze()
         Q = torch.min(Q[:zs.size(0)], Q[zs.size(0):])
         adv = Q.detach() - V
         v_loss = asymmetric_l2_loss(adv, self.iql_tau)
