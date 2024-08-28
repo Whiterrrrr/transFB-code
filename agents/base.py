@@ -364,9 +364,9 @@ class AbstractGaussianActor(AbstractMLP, metaclass=abc.ABCMeta):
         """
         # mu, log_std = self.trunk(observation).chunk(2, dim=-1)  # pylint: disable=E1102
         output = self.trunk(observation)
-        action, log_prob = squashed_gaussian(x=output, sample=sample)
+        action, action_dict = squashed_gaussian(x=output, sample=sample)
 
-        return action, log_prob
+        return action, action_dict
 
 
 class AbstractLogger(metaclass=abc.ABCMeta):

@@ -426,7 +426,7 @@ class IEXP(AbstractAgent):
         F1, F2 = self.Operate.forward_representation(observation=observation, z=z, action=actions)
         K = self.Operate.state_forward_representation(observation=observation, z=z)
         V = self.Operate.operator(K, z).squeeze() 
-        Q = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((z, z), dim=0)).squeeze() 
+        Q = self.Operate.operator_target(torch.cat((F1, F2), dim=0), torch.cat((z, z), dim=0)).squeeze() 
         Q = torch.min(Q[:z.size(0)], Q[z.size(0):])
         adv = (Q - V.detach())
         if not self.use_diffusion:
@@ -435,13 +435,16 @@ class IEXP(AbstractAgent):
             exp_adv = torch.exp(self.beta * adv.detach()).clamp(max=100)
             
             if (type(self.actor.actor) == AbstractGaussianActor):
-                log_prob = action_dist.log_prob(action).sum(-1)
-                actor_loss += 0.1 * log_prob
+                log_prob = action_dist[1].log_prob(actions).sum(-1)
                 mean_log_prob = log_prob.mean().item()
+                actor_loss = -(exp_adv * log_prob).mean()
             else:
+                std = schedule(self.std_dev_schedule, step)
+                action, action_dist = self.actor(observation, z, std, sample=True)
+                exp_adv = torch.exp(self.beta * adv.detach()).clamp(max=100)
                 mean_log_prob = 0.0
-            bc_losses = torch.sum((action - actions)**2, dim=1)
-            actor_loss =  torch.mean(exp_adv * bc_losses)
+                bc_losses = torch.sum((action - actions)**2, dim=1)
+                actor_loss =  torch.mean(exp_adv * bc_losses)
         else:
             mean_log_prob=0.0
             actor_loss = self.actor.policy_loss(actions, observation, z, q=Q.detach(), v=V.detach())

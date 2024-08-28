@@ -145,16 +145,16 @@ def squashed_gaussian(x, sample=True):
         action_unsquashed = gaussian.mean
     action = torch.tanh(action_unsquashed)
     # Compute log_prob from Gaussian, then apply correction for tanh squashing.
-    log_prob = gaussian.log_prob(action_unsquashed).sum(axis=-1)
-    log_prob -= (
-        2
-        * (
-            np.log(2)
-            - action_unsquashed
-            - torch.nn.functional.softplus(-2 * action_unsquashed)
-        )
-    ).sum(axis=-1)
-    return action, log_prob.unsqueeze(-1)
+    # log_prob = gaussian.log_prob(action_unsquashed).sum(axis=-1)
+    # log_prob -= (
+    #     2
+    #     * (
+    #         np.log(2)
+    #         - action_unsquashed
+    #         - torch.nn.functional.softplus(-2 * action_unsquashed)
+    #     )
+    # ).sum(axis=-1)
+    return action, gaussian
 
 
 class ReplayBufferDataset(torch.utils.data.Dataset):
