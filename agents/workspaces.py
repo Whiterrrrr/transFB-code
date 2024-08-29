@@ -210,6 +210,7 @@ class OfflineRLWorkspace(AbstractWorkspace):
         train_std: Optional[float] = None,  # FB only
         eval_std: Optional[float] = None,  # FB only
         project: str = "zero-shot",
+        entity: str = "1155173723",
     ):
         super().__init__(
             env=reward_constructor._env,
@@ -229,6 +230,7 @@ class OfflineRLWorkspace(AbstractWorkspace):
         self.domain_name = reward_constructor.domain_name
         self.device = device
         self.project = project
+        self.entity = entity
 
     def train(
         self,
@@ -245,7 +247,7 @@ class OfflineRLWorkspace(AbstractWorkspace):
                 config=agent_config,
                 tags=[agent.name, "core"],
                 reinit=True,
-                entity='1155173723',
+                entity=self.entity,
                 project=self.project,
                 name=agent.name,
             )

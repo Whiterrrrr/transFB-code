@@ -43,6 +43,7 @@ parser.add_argument("--target_conservative_penalty", type=float, default=50.0)
 parser.add_argument("--action_condition_index", type=int)
 parser.add_argument("--action_condition_value", type=float)
 parser.add_argument("--cql_alpha", type=float, default=0.01)
+parser.add_argument("--entity", type=str, default="1155173723")
 args = parser.parse_args()
 
 if args.wandb_logging == "True":
@@ -721,6 +722,7 @@ workspace = OfflineRLWorkspace(
     wandb_logging=config["wandb_logging"],
     device=config["device"],
     project=config["project"],
+    entity=config["entity"],
 )
 
 if __name__ == "__main__":
