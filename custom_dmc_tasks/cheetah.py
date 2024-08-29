@@ -55,7 +55,18 @@ def get_model_and_assets():
         os.path.join(root_dir, 'custom_dmc_tasks', 'cheetah.xml'))
     return xml, common.ASSETS
 
-
+@SUITE.add('benchmarking')
+def run(time_limit=_DEFAULT_TIME_LIMIT,
+                 random=None,
+                 environment_kwargs=None):
+    """Returns the run task."""
+    physics = Physics.from_xml_string(*get_model_and_assets())
+    task = Cheetah(forward=True, flip=False, random=random)
+    environment_kwargs = environment_kwargs or {}
+    return control.Environment(physics,
+                               task,
+                               time_limit=time_limit,
+                               **environment_kwargs)
 
 @SUITE.add('benchmarking')
 def run_backward(time_limit=_DEFAULT_TIME_LIMIT,
