@@ -71,7 +71,11 @@ class IEXP(AbstractAgent):
         iql_tau = 0.9,
         use_fed = False,
         use_diffusion=False,
-        beta=3
+        beta=3,
+        ts=5,
+        use_eql=False,
+        use_sql=False,
+        alpha=2,
     ):
         super().__init__(
             observation_length=observation_length,
@@ -158,9 +162,9 @@ class IEXP(AbstractAgent):
             self.actor = OP_Agent(
                 policy_model=self.policy,
                 schedule='vp',
-                num_timesteps=5,
+                num_timesteps=ts,
                 num_sample=16,
-                reward_temp=3,
+                reward_temp=beta,
             )
 
         self.encoder = torch.nn.Identity()
@@ -185,7 +189,10 @@ class IEXP(AbstractAgent):
         self._z_dimension = z_dimension
         self.std_dev_schedule = std_dev_schedule
         self.iql_tau = iql_tau
+        self.use_sql = use_sql
+        self.use_eql = use_eql
         self.beta = beta
+        self.alpha=alpha
         
         self.Operate_optimizer = torch.optim.AdamW(
             [
@@ -373,11 +380,23 @@ class IEXP(AbstractAgent):
         )
         fb_diag_loss = -sum(M.mean() for M in [M1_next, M2_next])
         fb_loss = fb_diag_loss + fb_off_diag_loss
-            
-        Q, V = self.Operate.operator_target(torch.cat((F1, F2), dim=0), torch.cat((zs, zs), dim=0)).squeeze(), self.Operate.operator(K, zs).squeeze()
-        Q = torch.min(Q[:zs.size(0)], Q[zs.size(0):])
-        adv = Q.detach() - V
-        v_loss = asymmetric_l2_loss(adv, self.iql_tau)
+        O = self.Operate.operator(K, B_rand).squeeze()
+        if self.use_sql:
+            sp_term = (torch.min(M1_rand, M2_rand).detach() - O) / (2 * self.alpha) + 1.0
+            sp_weight = torch.where(sp_term > 0, torch.tensor(1.0), torch.tensor(0.0))
+            v_loss = (sp_weight * (sp_term**2) + O / self.alpha).mean()
+        elif self.use_eql:
+            sp_term = (torch.min(M1_rand, M2_rand).detach() - O) / self.alpha
+            sp_term = torch.minimum(sp_term, torch.tensor(5.0))
+            max_sp_term = torch.max(sp_term, dim=0).values
+            max_sp_term = torch.where(max_sp_term < -1.0, torch.tensor(-1.0), max_sp_term)
+            max_sp_term = max_sp_term.detach()
+            v_loss = (torch.exp(sp_term - max_sp_term) + torch.exp(-max_sp_term) * O / alpha).mean()
+        else:
+            Q, V = self.Operate.operator_target(torch.cat((F1, F2), dim=0), torch.cat((zs, zs), dim=0)).squeeze(), self.Operate.operator(K, zs).squeeze()
+            Q = torch.min(Q[:zs.size(0)], Q[zs.size(0):])
+            adv = Q.detach() - V
+            v_loss = asymmetric_l2_loss(adv, self.iql_tau)
 
         covariance = torch.matmul(B_next, B_next.T)
         I = torch.eye(*covariance.size(), device=self._device)  # next state = s_{t+1}
@@ -398,6 +417,7 @@ class IEXP(AbstractAgent):
             "train/ortho_diag_loss": ortho_loss_diag,
             "train/ortho_off_diag_loss": ortho_loss_off_diag,
             "train/target_O": target_O.mean().item(),
+            "train/O": O.mean().item(),
             "train/M_next": M_next.mean().item(),
             "train/M_rand": M_rand.mean().item(),
             "train/K": K.mean().item(),

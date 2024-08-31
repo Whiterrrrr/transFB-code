@@ -589,6 +589,10 @@ elif config["algorithm"] == "iexp":
         iql_tau=config['iql_tau'],
         use_diffusion = config['use_diffusion'],
         beta = config['beta'],
+        ts=config['ts'],
+        use_sql=config['use_sql'],
+        use_eql=config['use_eql'],
+        alpha=config['alpha']
     )
     
     replay_buffer = FBReplayBuffer(
