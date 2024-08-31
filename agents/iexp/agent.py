@@ -500,10 +500,10 @@ class IEXP(AbstractAgent):
                 mean_log_prob = log_prob        
                 if self.use_eql:    
                     weight = torch.exp(10 * adv.detach()/self.alpha).clamp(max=100)
-                    actor_loss = -(weight * log_prob).mean().mean().item()
+                    actor_loss = -(weight * log_prob).mean()
                 elif self.use_sql:
                     weight = torch.clamp(adv, min=0)
-                    actor_loss = -(weight * log_prob).mean().mean().item()
+                    actor_loss = -(weight * log_prob).mean()
                 else:
                     actor_loss = -(exp_adv * log_prob).mean()
             else:
