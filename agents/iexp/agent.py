@@ -76,6 +76,7 @@ class IEXP(AbstractAgent):
         use_eql=False,
         use_sql=False,
         alpha=2,
+        dual_rep=False,
     ):
         super().__init__(
             observation_length=observation_length,
@@ -122,7 +123,8 @@ class IEXP(AbstractAgent):
             use_cross_attention=use_cross_attention,
             use_linear_res=use_linear_res,
             use_forward_backward_cross=use_forward_backward_cross,
-            use_fed=use_fed
+            use_fed=use_fed,
+            dual_rep=dual_rep,
         )
 
         if not self.use_diffusion:
@@ -179,7 +181,12 @@ class IEXP(AbstractAgent):
         self.Operate.operator_target.load_state_dict(
             self.Operate.operator.state_dict()
         )
+        if not dual_rep:
+            self.Operate.state_forward_representation_target.load_state_dict(
+                self.Operate.state_forward_representation.state_dict()
+            )
 
+        self.dual_rep = dual_rep
         self.use_2branch = use_2branch
         self.use_cross_attention = use_cross_attention
         self._device = device
@@ -211,7 +218,24 @@ class IEXP(AbstractAgent):
             weight_decay=0.03,
             betas=(0.9, 0.99),
             amsgrad=False
+        ) if not dual_rep else torch.optim.AdamW(
+            [
+                {"params": self.Operate.forward_representation.parameters()},
+                {
+                    "params": self.Operate.backward_representation.parameters(),
+                    "lr": critic_learning_rate * b_learning_rate_coefficient,
+                },
+                {
+                    "params": self.Operate.operator.parameters(),
+                    "lr": critic_learning_rate * g_learning_rate_coefficient,
+                },
+            ],
+            lr=critic_learning_rate,
+            weight_decay=0.03,
+            betas=(0.9, 0.99),
+            amsgrad=False
         )
+            
         self.scheduler = CosineAnnealingWarmRestarts(self.Operate_optimizer, T_0=5, T_mult=2, eta_min=1e-5)
         self.mixnet_optimizer = torch.optim.AdamW(
             self.Operate.operator.parameters(),
@@ -296,11 +320,12 @@ class IEXP(AbstractAgent):
             target_network=self.Operate.forward_representation_target,
             tau=self._tau,
         )
-        self.soft_update_params(
-            network=self.Operate.state_forward_representation,
-            target_network=self.Operate.state_forward_representation_target,
-            tau=self._tau,
-        )
+        if not self.dual_rep:
+            self.soft_update_params(
+                network=self.Operate.state_forward_representation,
+                target_network=self.Operate.state_forward_representation_target,
+                tau=self._tau,
+            )
         self.soft_update_params(
             network=self.Operate.backward_representation,
             target_network=self.Operate.backward_representation_target,
@@ -359,16 +384,29 @@ class IEXP(AbstractAgent):
     ):
         with torch.no_grad():
             actor_std_dev = schedule(self.std_dev_schedule, step)
-            target_K = self.Operate.state_forward_representation_target(
-                observation=next_observations, z=zs
-            )
-            target_B = self.Operate.backward_representation_target(observation=observations_rand)
-            target_O = self.Operate.operator_target(target_K, target_B).squeeze()
+            if self.dual_rep:
+                target_K1, target_K2 = self.Operate.forward_representation_target(observation=next_observations, z=zs, s_only=True)
+                target_O = self.Operate.operator_target(torch.cat((target_K1, target_K2), dim=0), torch.cat((target_B, target_B), dim=0)).squeeze()
+                target_O = torch.min(target_O[:target_B.size(0)], target_O[target_B.size(0):])
+                target_K = target_K1
+            else:
+                target_K = self.Operate.state_forward_representation_target(
+                    observation=next_observations, z=zs
+                )
+                target_B = self.Operate.backward_representation_target(observation=observations_rand)
+                target_O = self.Operate.operator_target(target_K, target_B).squeeze()
             
-        F1, F2 = self.Operate.forward_representation(observations, actions, zs)
         B = self.Operate.backward_representation(torch.cat((next_observations, observations_rand), dim=0))
         B_next, B_rand = B[:next_observations.size(0)], B[next_observations.size(0):]
-        K = self.Operate.state_forward_representation(observation=observations, z=zs)
+        if self.dual_rep:
+            F1, F2, K1, K2 = self.Operate.forward_representation(observations, actions, zs)
+            K = K1
+            O = self.Operate.operator(torch.cat((K1, K2), dim=0), torch.cat((B_rand, B_rand), dim=0)).squeeze()
+            O = torch.min(O[:B_rand.size(0)], O[B_rand.size(0):])
+        else:
+            F1, F2 = self.Operate.forward_representation(observations, actions, zs)
+            K = self.Operate.state_forward_representation(observation=observations, z=zs)
+            O = self.Operate.operator(K, B_rand).squeeze()
         M_next = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((B_next, B_next), dim=0)).squeeze()
         M_rand = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((B_rand, B_rand), dim=0)).squeeze()
         M1_next, M2_next = M_next[:B_next.size(0)],  M_next[B_next.size(0):]
@@ -380,7 +418,6 @@ class IEXP(AbstractAgent):
         )
         fb_diag_loss = -sum(M.mean() for M in [M1_next, M2_next])
         fb_loss = fb_diag_loss + fb_off_diag_loss
-        O = self.Operate.operator(K, B_rand).squeeze()
         if self.use_sql:
             sp_term = (torch.min(M1_rand, M2_rand).detach() - O) / (2 * self.alpha) + 1.0
             sp_weight = torch.where(sp_term > 0, torch.tensor(1.0), torch.tensor(0.0))
@@ -391,7 +428,7 @@ class IEXP(AbstractAgent):
             max_sp_term = torch.max(sp_term, dim=0).values
             max_sp_term = torch.where(max_sp_term < -1.0, torch.tensor(-1.0), max_sp_term)
             max_sp_term = max_sp_term.detach()
-            v_loss = (torch.exp(sp_term - max_sp_term) + torch.exp(-max_sp_term) * O / alpha).mean()
+            v_loss = (torch.exp(sp_term - max_sp_term) + torch.exp(-max_sp_term) * O / self.alpha).mean()
         else:
             Q, V = self.Operate.operator_target(torch.cat((F1, F2), dim=0), torch.cat((zs, zs), dim=0)).squeeze(), self.Operate.operator(K, zs).squeeze()
             Q = torch.min(Q[:zs.size(0)], Q[zs.size(0):])
@@ -442,10 +479,14 @@ class IEXP(AbstractAgent):
     def update_actor(
         self, observation: torch.Tensor, z: torch.Tensor, discounts: torch.Tensor, step: int, actions: torch.Tensor
     ) -> Dict[str, float]:
-        
-        F1, F2 = self.Operate.forward_representation(observation=observation, z=z, action=actions)
-        K = self.Operate.state_forward_representation(observation=observation, z=z)
-        V = self.Operate.operator(K, z).squeeze() 
+        if self.dual_rep:
+            F1, F2, K1, K2 = self.Operate.forward_representation(observation=observation, z=z, action=actions)
+            V = self.Operate.operator(torch.cat((K1, K2), dim=0), torch.cat((z, z), dim=0)).squeeze() 
+            V = torch.min(V[:z.size(0)], V[z.size(0):])
+        else:
+            F1, F2 = self.Operate.forward_representation(observation=observation, z=z, action=actions)
+            K = self.Operate.state_forward_representation(observation=observation, z=z)
+            V = self.Operate.operator(K, z).squeeze() 
         Q = self.Operate.operator_target(torch.cat((F1, F2), dim=0), torch.cat((z, z), dim=0)).squeeze() 
         Q = torch.min(Q[:z.size(0)], Q[z.size(0):])
         adv = (Q - V.detach())
@@ -512,7 +553,10 @@ class IEXP(AbstractAgent):
     def predict_q(
         self, observation: torch.Tensor, z: torch.Tensor, action: torch.Tensor, discounts: torch.Tensor
     ):
-        F1, F2 = self.Operate.forward_representation(observation=observation, z=z, action=action)
+        if self.dual_rep:
+            F1, F2, _, _ = self.Operate.forward_representation(observation=observation, z=z, action=action)
+        else:
+            F1, F2 = self.Operate.forward_representation(observation=observation, z=z, action=action)
         Q = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((z, z), dim=0)).squeeze() 
         return torch.min(Q[:z.size(0)], Q[z.size(0):])
 

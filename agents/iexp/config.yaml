@@ -42,6 +42,7 @@ use_2branch: false
 use_linear_res: false
 use_feature_norm: false
 use_AWAR: false
+dual_rep: true
 operator_hidden_dimension: 512
 operator_hidden_layers: 3
 operator_activation: "relu"

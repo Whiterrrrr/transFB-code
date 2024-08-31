@@ -283,7 +283,8 @@ class MixNetRepresentation(torch.nn.Module):
         use_feature_norm,
         use_cross_attention: bool,
         use_linear_res=False,
-        use_forward_backward_cross=False
+        use_forward_backward_cross=False,
+        dual_rep=False
     ):
         super().__init__()
         self.forward_representation = ForwardRepresentation(
@@ -299,7 +300,8 @@ class MixNetRepresentation(torch.nn.Module):
             forward_hidden_layers=forward_hidden_layers,
             device=device,
             forward_activation=forward_activation,
-            use_2branch=use_2branch
+            use_2branch=use_2branch,
+            dual_rep=dual_rep
         )
         self.forward_representation_target = ForwardRepresentation(
             observation_length=observation_length,
@@ -314,37 +316,39 @@ class MixNetRepresentation(torch.nn.Module):
             forward_hidden_layers=forward_hidden_layers,
             device=device,
             forward_activation=forward_activation,
-            use_2branch=use_2branch
+            use_2branch=use_2branch,
+            dual_rep=dual_rep
         )
         
-        self.state_forward_representation = StateForwardRepresentation(
-            observation_length=observation_length,
-            preprocessor_hidden_dimension=preprocessor_hidden_dimension,
-            preprocessor_feature_space_dimension=preprocessor_feature_space_dimension,
-            preprocessor_hidden_layers=preprocessor_hidden_layers,
-            preprocessor_activation=preprocessor_activation,
-            number_of_features=number_of_features,
-            z_dimension=z_dimension,
-            forward_hidden_dimension=forward_hidden_dimension,
-            forward_hidden_layers=forward_hidden_layers,
-            device=device,
-            forward_activation=forward_activation,
-            use_2branch=use_2branch
-        )
-        self.state_forward_representation_target = StateForwardRepresentation(
-            observation_length=observation_length,
-            preprocessor_hidden_dimension=preprocessor_hidden_dimension,
-            preprocessor_feature_space_dimension=preprocessor_feature_space_dimension,
-            preprocessor_hidden_layers=preprocessor_hidden_layers,
-            preprocessor_activation=preprocessor_activation,
-            number_of_features=number_of_features,
-            z_dimension=z_dimension,
-            forward_hidden_dimension=forward_hidden_dimension,
-            forward_hidden_layers=forward_hidden_layers,
-            device=device,
-            forward_activation=forward_activation,
-            use_2branch=use_2branch
-        )
+        if not dual_rep:
+            self.state_forward_representation = StateForwardRepresentation(
+                observation_length=observation_length,
+                preprocessor_hidden_dimension=preprocessor_hidden_dimension,
+                preprocessor_feature_space_dimension=preprocessor_feature_space_dimension,
+                preprocessor_hidden_layers=preprocessor_hidden_layers,
+                preprocessor_activation=preprocessor_activation,
+                number_of_features=number_of_features,
+                z_dimension=z_dimension,
+                forward_hidden_dimension=forward_hidden_dimension,
+                forward_hidden_layers=forward_hidden_layers,
+                device=device,
+                forward_activation=forward_activation,
+                use_2branch=use_2branch
+            )
+            self.state_forward_representation_target = StateForwardRepresentation(
+                observation_length=observation_length,
+                preprocessor_hidden_dimension=preprocessor_hidden_dimension,
+                preprocessor_feature_space_dimension=preprocessor_feature_space_dimension,
+                preprocessor_hidden_layers=preprocessor_hidden_layers,
+                preprocessor_activation=preprocessor_activation,
+                number_of_features=number_of_features,
+                z_dimension=z_dimension,
+                forward_hidden_dimension=forward_hidden_dimension,
+                forward_hidden_layers=forward_hidden_layers,
+                device=device,
+                forward_activation=forward_activation,
+                use_2branch=use_2branch
+            )
         
         self.backward_representation = BackwardRepresentation(
             observation_length=observation_length,
