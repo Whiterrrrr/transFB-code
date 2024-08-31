@@ -384,6 +384,7 @@ class IEXP(AbstractAgent):
     ):
         with torch.no_grad():
             actor_std_dev = schedule(self.std_dev_schedule, step)
+            target_B = self.Operate.backward_representation_target(observation=observations_rand)
             if self.dual_rep:
                 target_K1, target_K2 = self.Operate.forward_representation_target(observation=next_observations, z=zs, s_only=True)
                 target_O = self.Operate.operator_target(torch.cat((target_K1, target_K2), dim=0), torch.cat((target_B, target_B), dim=0)).squeeze()
@@ -393,7 +394,6 @@ class IEXP(AbstractAgent):
                 target_K = self.Operate.state_forward_representation_target(
                     observation=next_observations, z=zs
                 )
-                target_B = self.Operate.backward_representation_target(observation=observations_rand)
                 target_O = self.Operate.operator_target(target_K, target_B).squeeze()
             
         B = self.Operate.backward_representation(torch.cat((next_observations, observations_rand), dim=0))
