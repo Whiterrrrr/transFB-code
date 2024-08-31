@@ -497,8 +497,15 @@ class IEXP(AbstractAgent):
             
             if (type(self.actor.actor) == AbstractGaussianActor):
                 log_prob = action_dist[1].log_prob(actions).sum(-1)
-                mean_log_prob = log_prob.mean().item()
-                actor_loss = -(exp_adv * log_prob).mean()
+                mean_log_prob = log_prob        
+                if self.use_eql:    
+                    weight = torch.exp(10 * adv.detach()/self.alpha).clamp(max=100)
+                    actor_loss = -(weight * log_prob).mean().mean().item()
+                elif self.use_sql:
+                    weight = torch.clamp(adv, min=0)
+                    actor_loss = -(weight * log_prob).mean().mean().item()
+                else:
+                    actor_loss = -(exp_adv * log_prob).mean()
             else:
                 std = schedule(self.std_dev_schedule, step)
                 action, action_dist = self.actor(observation, z, std, sample=True)
