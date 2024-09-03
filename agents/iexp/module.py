@@ -47,10 +47,10 @@ class Linear_block(nn.Module):
         return u, std
     
     
-class MixNet(AbstractMLP):
+class V_net(AbstractMLP):
     def __init__(
         self,
-        z_dimension: int,
+        input_dimension: int,
         hidden_dimension: int,
         hidden_layers: int,
         device: torch.device,
@@ -58,7 +58,7 @@ class MixNet(AbstractMLP):
         layernorm = True
     ):
         super().__init__(
-            input_dimension=2*z_dimension,
+            input_dimension=input_dimension,
             output_dimension=1,
             hidden_dimension=hidden_dimension,
             hidden_layers=hidden_layers,
@@ -66,12 +66,11 @@ class MixNet(AbstractMLP):
             device=device,
             layernorm=layernorm
         )
-        self._z_dimension = z_dimension
         self.apply(weight_init)
 
-    def forward(self, observation: torch.Tensor, B) -> torch.Tensor:
-        z = self.trunk(torch.cat([observation, B], dim=-1))  # pylint: disable=E1102
-        return z   
+    def forward(self, observation: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+        V = self.trunk(torch.cat([observation, z], dim=-1))
+        return V   
     
     
 class SelfAttention(nn.Module):

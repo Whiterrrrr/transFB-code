@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Tuple, Dict, Optional
 import torch
 import numpy as np
-from agents.iexp.module import MixNetRepresentation
+from agents.iexp.module import MixNetRepresentation, V_net
 from agents.fb.models import ActorModel
 from agents.base import AbstractAgent, Batch, AbstractGaussianActor
 from agents.utils import schedule
@@ -125,9 +125,8 @@ class IEXP(AbstractAgent):
             use_forward_backward_cross=use_forward_backward_cross,
             use_fed=use_fed,
         )
-        self.V_net = AbstractMLP(
+        self.V_net = V_net(
             input_dimension=observation_length + z_dimension,
-            output_dimension=1,
             hidden_dimension=forward_hidden_dimension,
             hidden_layers=forward_hidden_layers,
             activation=forward_activation,
@@ -370,14 +369,14 @@ class IEXP(AbstractAgent):
             next_actions, _ = self.actor(next_observations, zs, actor_std_dev, sample=True)
             target_B = self.Operate.backward_representation_target(observations_rand)
             target_F1, target_F2 = self.Operate.forward_representation_target(next_observations, next_actions, zs)
-            target_V = self.V_net(torch.cat((next_observations, zs), dim=1)).squeeze()
+            target_V = self.V_net(next_observations, zs).squeeze()
             target_M = self.Operate.operator_target(torch.cat((target_F1, target_F2), dim=0), torch.cat((target_B, target_B), dim=0)).squeeze()
             target_M = torch.min(target_M[:target_B.size(0)], target_M[target_B.size(0):])
             
         B = self.Operate.backward_representation(torch.cat((next_observations, observations_rand), dim=0))
         B_next, B_rand = B[:next_observations.size(0)], B[next_observations.size(0):]
         F1, F2 = self.Operate.forward_representation(observations, actions, zs)
-        V = self.V_net(torch.cat((observations, zs), dim=1)).squeeze()
+        V = self.V_net(observations, zs).squeeze()
         Q = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((zs, zs), dim=0)).squeeze()
         Q = torch.min(Q[:zs.size(0)], Q[zs.size(0):])
         M_next = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((B_next, B_next), dim=0)).squeeze()
@@ -454,7 +453,7 @@ class IEXP(AbstractAgent):
         self, observation: torch.Tensor, z: torch.Tensor, discounts: torch.Tensor, step: int, actions: torch.Tensor
     ) -> Dict[str, float]:
         F1, F2 = self.Operate.forward_representation_target(observation=observation, z=z, action=actions)
-        V = self.V_net(torch.cat((observation, z), dim=1)).squeeze()
+        V = self.V_net(observation, z).squeeze()
         Q = self.Operate.operator_target(torch.cat((F1, F2), dim=0), torch.cat((z, z), dim=0)).squeeze() 
         Q = torch.min(Q[:z.size(0)], Q[z.size(0):])
         adv = (Q - V.detach())
