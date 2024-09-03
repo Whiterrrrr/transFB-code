@@ -126,11 +126,11 @@ class IEXP(AbstractAgent):
             use_fed=use_fed,
         )
         self.V_net = AbstractMLP(
-            input_dim=observation_length + z_dimension,
-            output_dim=1,
-            hidden_dim=forward_hidden_dimension,
-            num_blocks=forward_hidden_layers,
-            ac_fn=forward_activation,
+            input_dimension=observation_length + z_dimension,
+            output_dimension=1,
+            hidden_dimension=forward_hidden_dimension,
+            hidden_layers=forward_hidden_layers,
+            activation=forward_activation,
             device=device,
         )
         self.actor = ActorModel(
