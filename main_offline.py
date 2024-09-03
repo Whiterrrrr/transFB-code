@@ -593,7 +593,7 @@ elif config["algorithm"] == "iexp":
         use_sql=config['use_sql'],
         use_eql=config['use_eql'],
         alpha=config['alpha'],
-        dual_rep=config['dual_rep'],
+        V_learning_rate=config['V_learning_rate'],
     )
     
     replay_buffer = FBReplayBuffer(

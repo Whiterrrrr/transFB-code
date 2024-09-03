@@ -42,7 +42,6 @@ use_2branch: false
 use_linear_res: false
 use_feature_norm: false
 use_AWAR: false
-dual_rep: true
 operator_hidden_dimension: 512
 operator_hidden_layers: 3
 operator_activation: "relu"
@@ -61,6 +60,7 @@ actor_activation: "relu"
 
 seed: 42
 critic_learning_rate: 0.00008
+V_learning_rate: 0.0001
 actor_learning_rate: 0.00005
 learning_steps: 1000000
 b_learning_rate_coefficient: 1
