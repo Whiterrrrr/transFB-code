@@ -272,7 +272,10 @@ class IEXP(AbstractAgent):
             with torch.no_grad():
                 actions = self.agent.get_actions(observation, z)
                 observation, z = observation.repeat(actions.shape[0], 1), z.repeat(actions.shape[0], 1)
-                F1, F2 = self.Operate.forward_representation(observation, actions, z)
+                if self.dual_rep:
+                    F1, F2, _, _ = self.Operate.forward_representation_target(observation=observation, z=z, action=actions)
+                else:
+                    F1, F2 = self.Operate.forward_representation_target(observation=observation, z=z, action=actions)
                 Q = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((z, z), dim=0)).squeeze()
                 Q = torch.min(Q[:z.size(0)], Q[z.size(0):])
                 idx = torch.argmax(Q)
