@@ -376,11 +376,12 @@ class IEXP(AbstractAgent):
         fb_loss = fb_diag_loss + fb_off_diag_loss
         total_loss = fb_loss * self.f_loss_coefficient
         
-        # kb loss
+        # kb loss used by eql/sql
         ado = target_M - O_rand
         kb_loss = asymmetric_l2_loss(ado, self.asymmetric_l2_tau)
         total_loss += kb_loss * self.f_loss_coefficient
         
+        # iql loss
         adv = target_Q - V
         if self.use_q_loss:
             # q loss
