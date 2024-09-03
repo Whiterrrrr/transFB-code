@@ -127,24 +127,23 @@ class IEXP(AbstractAgent):
             dual_rep=dual_rep,
         )
 
-        if not self.use_diffusion:
-            self.actor = ActorModel(
-                observation_length=observation_length,
-                action_length=action_length,
-                preprocessor_hidden_dimension=preprocessor_hidden_dimension,
-                preprocessor_feature_space_dimension=preprocessor_output_dimension,
-                preprocessor_hidden_layers=preprocessor_hidden_layers,
-                preprocessor_activation=preprocessor_activation,
-                z_dimension=z_dimension,
-                number_of_features=forward_number_of_features,
-                actor_hidden_dimension=actor_hidden_dimension,
-                actor_hidden_layers=actor_hidden_layers,
-                actor_activation=actor_activation,
-                gaussian_actor=gaussian_actor,
-                std_dev_clip=std_dev_clip,
-                device=device,
-            )
-        else:
+        self.actor = ActorModel(
+            observation_length=observation_length,
+            action_length=action_length,
+            preprocessor_hidden_dimension=preprocessor_hidden_dimension,
+            preprocessor_feature_space_dimension=preprocessor_output_dimension,
+            preprocessor_hidden_layers=preprocessor_hidden_layers,
+            preprocessor_activation=preprocessor_activation,
+            z_dimension=z_dimension,
+            number_of_features=forward_number_of_features,
+            actor_hidden_dimension=actor_hidden_dimension,
+            actor_hidden_layers=actor_hidden_layers,
+            actor_activation=actor_activation,
+            gaussian_actor=gaussian_actor,
+            std_dev_clip=std_dev_clip,
+            device=device,
+        )
+        if self.use_diffusion:
             self.policy = IDQLDiffusion(
                 input_dim=action_length,  # a dim
                 output_dim=action_length,  # a dim
@@ -161,7 +160,7 @@ class IEXP(AbstractAgent):
                 time_embeding='fixed',
                 device=device,
             )
-            self.actor = OP_Agent(
+            self.agent = OP_Agent(
                 policy_model=self.policy,
                 schedule='vp',
                 num_timesteps=ts,
@@ -384,54 +383,58 @@ class IEXP(AbstractAgent):
     ):
         with torch.no_grad():
             actor_std_dev = schedule(self.std_dev_schedule, step)
-            target_B = self.Operate.backward_representation_target(observation=observations_rand)
+            next_actions, _ = self.actor(next_observations, zs, actor_std_dev, sample=True)
+            target_B = self.Operate.backward_representation_target(observations_rand)
             if self.dual_rep:
-                target_K1, target_K2 = self.Operate.forward_representation_target(observation=next_observations, z=zs, s_only=True)
-                target_O = self.Operate.operator_target(torch.cat((target_K1, target_K2), dim=0), torch.cat((target_B, target_B), dim=0)).squeeze()
-                target_O = torch.min(target_O[:target_B.size(0)], target_O[target_B.size(0):])
-                target_K = target_K1
+                target_F1, target_F2, target_K1, target_K2 = self.Operate.forward_representation_target(next_observations, next_actions, zs)
+                target_V = self.Operate.operator_target(torch.cat((target_K1, target_K2), dim=0), torch.cat((zs, zs), dim=0)).squeeze()
             else:
-                target_K = self.Operate.state_forward_representation_target(
-                    observation=next_observations, z=zs
-                )
-                target_O = self.Operate.operator_target(target_K, target_B).squeeze()
+                target_K = self.Operate.state_forward_representation_target(next_observations, zs)
+                target_F1, target_F2 = self.Operate.forward_representation_target(next_observations, next_actions, zs)
+                target_V = self.Operate.operator_target(target_K, zs).squeeze()
+            target_M = self.Operate.operator_target(torch.cat((target_F1, target_F2), dim=0), torch.cat((target_B, target_B), dim=0)).squeeze()
             
         B = self.Operate.backward_representation(torch.cat((next_observations, observations_rand), dim=0))
         B_next, B_rand = B[:next_observations.size(0)], B[next_observations.size(0):]
         if self.dual_rep:
             F1, F2, K1, K2 = self.Operate.forward_representation(observations, actions, zs)
-            K = K1
-            O = self.Operate.operator(torch.cat((K1, K2), dim=0), torch.cat((B_rand, B_rand), dim=0)).squeeze()
-            O = torch.min(O[:B_rand.size(0)], O[B_rand.size(0):])
+            V = self.Operate.operator(torch.cat((K1, K2), dim=0), torch.cat((zs, zs), dim=0)).squeeze()
         else:
             F1, F2 = self.Operate.forward_representation(observations, actions, zs)
-            K = self.Operate.state_forward_representation(observation=observations, z=zs)
-            O = self.Operate.operator(K, B_rand).squeeze()
+            K = self.Operate.state_forward_representation(observations, zs)
+            K1 = K2 = K
+            V = self.Operate.operator(K, zs).squeeze()
+        Q = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((zs, zs), dim=0)).squeeze()
+        Q = torch.min(Q[:zs.size(0)], Q[zs.size(0):])
         M_next = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((B_next, B_next), dim=0)).squeeze()
         M_rand = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((B_rand, B_rand), dim=0)).squeeze()
-        M1_next, M2_next = M_next[:B_next.size(0)],  M_next[B_next.size(0):]
-        M1_rand, M2_rand = M_rand[:B_rand.size(0)], M_rand[B_rand.size(0):]
+        M1_next, M2_next, M1_rand, M2_rand = M_next[:B_next.size(0)], M_next[B_next.size(0):], M_rand[:B_rand.size(0)], M_rand[B_rand.size(0):]
         M_rand = torch.min(M1_rand, M2_rand)
-        fb_off_diag_loss = 0.5 * sum(
-            (M - discounts * target_O).pow(2).mean()
-            for M in [M1_rand, M2_rand]
-        )
+        
+        fb_off_diag_loss = 0.5 * sum((M - discounts * target_M).pow(2).mean()for M in [M1_rand, M2_rand])
         fb_diag_loss = -sum(M.mean() for M in [M1_next, M2_next])
         fb_loss = fb_diag_loss + fb_off_diag_loss
+        
+        with torch.no_grad():
+            cov = torch.matmul(B_next.T, B_next) / B_next.shape[0]
+            inv_cov = torch.inverse(cov)
+            implicit_reward = (torch.matmul(B_next, inv_cov) * zs).sum(dim=1)
+            target_V = implicit_reward.detach() + discounts.squeeze() * target_V
+            
+        q_loss = F.mse_loss(Q, target_V)
+        
         if self.use_sql:
-            sp_term = (torch.min(M1_rand, M2_rand).detach() - O) / (2 * self.alpha) + 1.0
+            sp_term = (Q.detach() - V) / (2 * self.alpha) + 1.0
             sp_weight = torch.where(sp_term > 0, torch.tensor(1.0), torch.tensor(0.0))
-            v_loss = (sp_weight * (sp_term**2) + O / self.alpha).mean()
+            v_loss = (sp_weight * (sp_term**2) + V / self.alpha).mean()
         elif self.use_eql:
-            sp_term = (torch.min(M1_rand, M2_rand).detach() - O) / self.alpha
+            sp_term = (Q.detach() - V) / self.alpha
             sp_term = torch.minimum(sp_term, torch.tensor(5.0))
             max_sp_term = torch.max(sp_term, dim=0).values
             max_sp_term = torch.where(max_sp_term < -1.0, torch.tensor(-1.0), max_sp_term)
             max_sp_term = max_sp_term.detach()
-            v_loss = (torch.exp(sp_term - max_sp_term) + torch.exp(-max_sp_term) * O / self.alpha).mean()
+            v_loss = (torch.exp(sp_term - max_sp_term) + torch.exp(-max_sp_term) * V / self.alpha).mean()
         else:
-            Q, V = self.Operate.operator_target(torch.cat((F1, F2), dim=0), torch.cat((zs, zs), dim=0)).squeeze(), self.Operate.operator(K, zs).squeeze()
-            Q = torch.min(Q[:zs.size(0)], Q[zs.size(0):])
             adv = Q.detach() - V
             v_loss = asymmetric_l2_loss(adv, self.iql_tau)
 
@@ -444,34 +447,30 @@ class IEXP(AbstractAgent):
             ortho_loss_diag + ortho_loss_off_diag
         )
 
-        total_loss = fb_loss + v_loss + ortho_loss
+        total_loss = fb_loss + v_loss + ortho_loss + q_loss
         metrics = {
             "train/forward_backward_total_loss": total_loss,
             "train/forward_backward_v_loss": v_loss,
+            "train/forward_backward_q_loss": q_loss,
             "train/forward_backward_fb_loss": fb_loss,
             "train/forward_backward_fb_diag_loss": fb_diag_loss,
             "train/forward_backward_fb_off_diag_loss": fb_off_diag_loss,
             "train/ortho_diag_loss": ortho_loss_diag,
             "train/ortho_off_diag_loss": ortho_loss_off_diag,
-            "train/target_O": target_O.mean().item(),
-            "train/O": O.mean().item(),
             "train/M_next": M_next.mean().item(),
             "train/M_rand": M_rand.mean().item(),
-            "train/K": K.mean().item(),
+            "train/K1": K1.mean().item(),
+            "train/K2": K2.mean().item(),
             "train/F1": F1.mean().item(),
             "train/F2": F2.mean().item(),
+            "train/Q": Q.mean().item(),
+            "train/V": V.mean().item(),
+            "train/target_V": target_V.mean().item(),
             "train/target_K": target_K.mean().item(),
-            "train/F1_norm1": torch.mean(torch.norm(F1, p=1, dim=1)).item(),
-            "train/F2_norm1": torch.mean(torch.norm(F2, p=1, dim=1)).item(),
             "train/B_rand": B_rand.mean().item(),
             "train/B_next": B_next.mean().item(),
             "train/target_B": target_B.mean().item(),
-            "train/B_rand_norm1": torch.mean(torch.norm(B_rand, p=1, dim=1)).item(),
-            "train/B_next_norm1": torch.mean(torch.norm(B_next, p=1, dim=1)).item(),
-            "train/target_B_norm1": torch.mean(torch.norm(target_B, p=1, dim=1)).item(),
-            "train/B_rand_var": B_rand.var(dim=1).mean().item(),
-            "train/B_next_var": B_next.var(dim=1).mean().item(),
-            "train/target_B_var": target_B.var(dim=1).mean().item(),
+            "train/implicit_reward": implicit_reward.mean().item(),
         }
         return total_loss, metrics, \
             F1, F2, B_next, B_rand, target_B, off_diagonal, actor_std_dev
@@ -480,42 +479,41 @@ class IEXP(AbstractAgent):
         self, observation: torch.Tensor, z: torch.Tensor, discounts: torch.Tensor, step: int, actions: torch.Tensor
     ) -> Dict[str, float]:
         if self.dual_rep:
-            F1, F2, K1, K2 = self.Operate.forward_representation(observation=observation, z=z, action=actions)
-            V = self.Operate.operator(torch.cat((K1, K2), dim=0), torch.cat((z, z), dim=0)).squeeze() 
+            F1, F2, K1, K2 = self.Operate.forward_representation_target(observation=observation, z=z, action=actions)
+            V = self.Operate.operator_target(torch.cat((K1, K2), dim=0), torch.cat((z, z), dim=0)).squeeze() 
             V = torch.min(V[:z.size(0)], V[z.size(0):])
         else:
-            F1, F2 = self.Operate.forward_representation(observation=observation, z=z, action=actions)
-            K = self.Operate.state_forward_representation(observation=observation, z=z)
-            V = self.Operate.operator(K, z).squeeze() 
+            F1, F2 = self.Operate.forward_representation_target(observation=observation, z=z, action=actions)
+            K = self.Operate.state_forward_representation_target(observation=observation, z=z)
+            V = self.Operate.operator_target(K, z).squeeze() 
         Q = self.Operate.operator_target(torch.cat((F1, F2), dim=0), torch.cat((z, z), dim=0)).squeeze() 
         Q = torch.min(Q[:z.size(0)], Q[z.size(0):])
         adv = (Q - V.detach())
-        if not self.use_diffusion:
-            std = schedule(self.std_dev_schedule, step)
-            action, action_dist = self.actor(observation, z, std, sample=True)
-            exp_adv = torch.exp(self.beta * adv.detach()).clamp(max=100)
-            
-            if (type(self.actor.actor) == AbstractGaussianActor):
-                log_prob = action_dist[1].log_prob(actions).sum(-1)
-                mean_log_prob = log_prob        
-                if self.use_eql:    
-                    weight = torch.exp(10 * adv.detach()/self.alpha).clamp(max=100)
-                    actor_loss = -(weight * log_prob).mean()
-                elif self.use_sql:
-                    weight = torch.clamp(adv, min=0)
-                    actor_loss = -(weight * log_prob).mean()
-                else:
-                    actor_loss = -(exp_adv * log_prob).mean()
+        
+        std = schedule(self.std_dev_schedule, step)
+        actor_output, action_dist = self.actor(observation, z, std, sample=True)
+        exp_adv = torch.exp(self.beta * adv.detach()).clamp(max=100)
+        
+        if (type(self.actor.actor) == AbstractGaussianActor):
+            log_prob = action_dist[1].log_prob(actions).sum(-1)
+            mean_log_prob = log_prob        
+            if self.use_eql:    
+                weight = torch.exp(10 * adv.detach()/self.alpha).clamp(max=100)
+                actor_loss = -(weight * log_prob).mean()
+            elif self.use_sql:
+                weight = torch.clamp(adv, min=0)
+                actor_loss = -(weight * log_prob).mean()
             else:
-                std = schedule(self.std_dev_schedule, step)
-                action, action_dist = self.actor(observation, z, std, sample=True)
-                exp_adv = torch.exp(self.beta * adv.detach()).clamp(max=100)
-                mean_log_prob = 0.0
-                bc_losses = torch.sum((action - actions)**2, dim=1)
-                actor_loss =  torch.mean(exp_adv * bc_losses)
+                actor_loss = -(exp_adv * log_prob).mean()
         else:
-            mean_log_prob=0.0
-            actor_loss = self.actor.policy_loss(actions, observation, z, q=Q.detach(), v=V.detach()).mean()
+            exp_adv = torch.exp(self.beta * adv.detach()).clamp(max=100)
+            mean_log_prob = 0.0
+            bc_losses = torch.sum((actor_output - actions)**2, dim=1)
+            actor_loss =  torch.mean(exp_adv * bc_losses)
+            
+        if self.use_diffusion:
+            diffusion_loss = self.agent.policy_loss(actions, observation, z, q=Q.detach(), v=V.detach()).mean()
+            actor_loss += diffusion_loss
 
         self.actor_optimizer.zero_grad(set_to_none=True)
         actor_loss.backward()

@@ -9,7 +9,7 @@ from agents.fb.models import ActorModel
 from agents.base import AbstractAgent, Batch, AbstractGaussianActor
 from agents.fb.base import FF_pred_model
 from agents.utils import schedule
-from torch.optim.lr_scheduler import CosineAnnealingLR, CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from agents.cexp.utils import perturb, cal_dormant_grad, perturb_factor, cal_dormant_ratio, dormant_perturb
 
 class CEXP(AbstractAgent):
@@ -675,7 +675,6 @@ class CEXP(AbstractAgent):
                             torch.cat((target_F1, target_F2), dim=0), 
                             torch.cat((zs, zs), dim=0)
                         ).squeeze() 
-                        next_Q = next_Q.squeeze()
                     else:
                         next_Q, next_Q_feature = self.Operate.operator_target(
                             torch.cat((target_F1, target_F2), dim=0), 
