@@ -388,6 +388,7 @@ class IEXP(AbstractAgent):
             if self.dual_rep:
                 target_F1, target_F2, target_K1, target_K2 = self.Operate.forward_representation_target(next_observations, next_actions, zs)
                 target_V = self.Operate.operator_target(torch.cat((target_K1, target_K2), dim=0), torch.cat((zs, zs), dim=0)).squeeze()
+                target_V = torch.min(target_V[:zs.size(0)], target_V[zs.size(0):])
             else:
                 target_K = self.Operate.state_forward_representation_target(next_observations, zs)
                 target_F1, target_F2 = self.Operate.forward_representation_target(next_observations, next_actions, zs)
