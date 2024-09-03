@@ -133,7 +133,7 @@ class FB(AbstractAgent):
 
         observation = torch.as_tensor(
             observation, dtype=torch.float32, device=self._device
-        ).unsqueeze(0)
+        ).unsqueeze(0) # reformat
         h = self.encoder(observation)
         z = torch.as_tensor(task, dtype=torch.float32, device=self._device).unsqueeze(0)
 
@@ -374,7 +374,7 @@ class FB(AbstractAgent):
         if rewards is not None:
             z = torch.matmul(rewards.T, z) / rewards.shape[0]  # reward-weighted average
 
-        z = math.sqrt(self._z_dimension) * torch.nn.functional.normalize(z, dim=1)
+        z = math.sqrt(self._z_dimension) * torch.nn.functional.normalize(z, dim=1) # TODO pkoi
 
         z = z.squeeze().cpu().numpy()
 

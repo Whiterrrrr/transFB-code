@@ -255,7 +255,7 @@ class CEXP(AbstractAgent):
                 },
             ],
             lr=critic_learning_rate,
-            weight_decay=0.03,
+            weight_decay=0.03, # TODO why is it not listed as hyperparameters ?
             betas=(0.9, 0.99),
             amsgrad=False
         )

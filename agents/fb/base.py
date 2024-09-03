@@ -185,7 +185,7 @@ class ActorModel(nn.Module):
     ) -> Tuple[torch.Tensor, torch.distributions.Distribution]:
 
         obs_embedding = self.obs_preprocessor(observation)
-        obs_z_embedding = self.obs_z_preprocessor(torch.cat([observation, z], dim=-1))
+        obs_z_embedding = self.obs_z_preprocessor(torch.cat([observation, z], dim=-1)) # TODO understand
         h = torch.cat([obs_embedding, obs_z_embedding], dim=-1)
 
         action_dist = (

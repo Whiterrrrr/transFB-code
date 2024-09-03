@@ -194,8 +194,7 @@ class EXP_sym(AbstractAgent):
             == self.total_action_samples
         )
 
-        self.update_freq=update_freq
-        self.use_cons = use_cons
+        self.update_freq=        self.use_cons = use_cons
         self.alpha = alpha
         self.target_conservative_penalty = target_conservative_penalty
         self.use_q_loss=use_q_loss

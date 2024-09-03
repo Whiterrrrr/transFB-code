@@ -140,9 +140,9 @@ class SAC(AbstractAgent, metaclass=abc.ABCMeta):
         )
         observation = observation.unsqueeze(0)
 
-        action, _ = self.actor(observation, sample=sample)
+        ac)
 
-        return action.detach().cpu().numpy()
+        return action.detach().cpu().numpy()tion, _ = self.actor(observation, sample=sample
 
     def update(self, batch: Batch, step: int) -> Dict[str, float]:
 
