@@ -469,7 +469,6 @@ class IEXP(AbstractAgent):
             "train/Q": Q.mean().item(),
             "train/V": V.mean().item(),
             "train/target_V": target_V.mean().item(),
-            "train/target_K": target_K.mean().item(),
             "train/B_rand": B_rand.mean().item(),
             "train/B_next": B_next.mean().item(),
             "train/target_B": target_B.mean().item(),
