@@ -270,7 +270,7 @@ class IEXP(AbstractAgent):
             action = action[0]
         else:
             with torch.no_grad():
-                actions = self.actor.get_actions(observation, z)
+                actions = self.agent.get_actions(observation, z)
                 observation, z = observation.repeat(actions.shape[0], 1), z.repeat(actions.shape[0], 1)
                 F1, F2 = self.Operate.forward_representation(observation, actions, z)
                 Q = self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((z, z), dim=0)).squeeze()
