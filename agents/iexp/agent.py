@@ -393,6 +393,7 @@ class IEXP(AbstractAgent):
                 target_F1, target_F2 = self.Operate.forward_representation_target(next_observations, next_actions, zs)
                 target_V = self.Operate.operator_target(target_K, zs).squeeze()
             target_M = self.Operate.operator_target(torch.cat((target_F1, target_F2), dim=0), torch.cat((target_B, target_B), dim=0)).squeeze()
+            target_M = torch.min(target_M[:target_B.size(0)], target_M[target_B.size(0):])
             
         B = self.Operate.backward_representation(torch.cat((next_observations, observations_rand), dim=0))
         B_next, B_rand = B[:next_observations.size(0)], B[next_observations.size(0):]
