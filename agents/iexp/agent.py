@@ -75,7 +75,7 @@ class IEXP(AbstractAgent):
         ts=5,
         use_eql=False,
         use_sql=False,
-        alpha=2,
+        implicit_alpha=2,
         V_learning_rate=1e-3,
     ):
         super().__init__(
@@ -198,7 +198,7 @@ class IEXP(AbstractAgent):
         self.use_sql = use_sql
         self.use_eql = use_eql
         self.beta = beta
-        self.alpha=alpha
+        self.implicit_alpha=implicit_alpha
         
         self.Operate_optimizer = torch.optim.AdamW(
             [
@@ -397,16 +397,16 @@ class IEXP(AbstractAgent):
         q_loss = F.mse_loss(Q, target_V)
         
         if self.use_sql:
-            sp_term = (Q.detach() - V) / (2 * self.alpha) + 1.0
+            sp_term = (Q.detach() - V) / (2 * self.implicit_alpha) + 1.0
             sp_weight = torch.where(sp_term > 0, torch.tensor(1.0), torch.tensor(0.0))
-            v_loss = (sp_weight * (sp_term**2) + V / self.alpha).mean()
+            v_loss = (sp_weight * (sp_term**2) + V / self.implicit_alpha).mean()
         elif self.use_eql:
-            sp_term = (Q.detach() - V) / self.alpha
+            sp_term = (Q.detach() - V) / self.implicit_alpha
             sp_term = torch.minimum(sp_term, torch.tensor(5.0))
             max_sp_term = torch.max(sp_term, dim=0).values
             max_sp_term = torch.where(max_sp_term < -1.0, torch.tensor(-1.0), max_sp_term)
             max_sp_term = max_sp_term.detach()
-            v_loss = (torch.exp(sp_term - max_sp_term) + torch.exp(-max_sp_term) * V / self.alpha).mean()
+            v_loss = (torch.exp(sp_term - max_sp_term) + torch.exp(-max_sp_term) * V / self.implicit_alpha).mean()
         else:
             adv = Q.detach() - V
             v_loss = asymmetric_l2_loss(adv, self.iql_tau)
@@ -466,7 +466,7 @@ class IEXP(AbstractAgent):
             log_prob = action_dist[1].log_prob(actions).sum(-1)
             mean_log_prob = log_prob        
             if self.use_eql:    
-                weight = torch.exp(10 * adv.detach()/self.alpha).clamp(max=100)
+                weight = torch.exp(10 * adv.detach()/self.implicit_alpha).clamp(max=100)
                 actor_loss = -(weight * log_prob).mean()
             elif self.use_sql:
                 weight = torch.clamp(adv, min=0)

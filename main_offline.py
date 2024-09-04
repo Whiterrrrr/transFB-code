@@ -592,7 +592,7 @@ elif config["algorithm"] == "iexp":
         ts=config['ts'],
         use_sql=config['use_sql'],
         use_eql=config['use_eql'],
-        alpha=config['alpha'],
+        implicit_alpha=config['implicit_alpha'],
         V_learning_rate=config['V_learning_rate'],
     )
     

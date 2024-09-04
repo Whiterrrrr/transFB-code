@@ -75,4 +75,4 @@ tau: 0.001
 iql_tau: 0.9
 beta: 3
 ts: 5
-alpha: 2
+implicit_alpha: 2

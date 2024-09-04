@@ -1,9 +1,7 @@
 from agents.fb.models import (
     ForwardRepresentation,
     BackwardRepresentation,
-    StateForwardRepresentation
 )
-import torch.distributions as dist
 from agents.base import AbstractMLP
 import torch
 from torch import nn
