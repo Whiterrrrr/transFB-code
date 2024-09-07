@@ -55,7 +55,6 @@ class CEXP(AbstractAgent):
         std_dev_clip: float,
         std_dev_schedule: str,
         tau: float,
-        target_conservative_penalty: float,
         device: torch.device,
         name: str,
         use_fed:bool,
@@ -152,7 +151,6 @@ class CEXP(AbstractAgent):
         self.Operate.operator_target.load_state_dict(
             self.Operate.operator.state_dict()
         )
-        self.target_conservative_penalty = target_conservative_penalty
         self.use_distribution = use_distribution
         self._device = device
         self.batch_size = batch_size
