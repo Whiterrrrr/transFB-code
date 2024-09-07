@@ -6,9 +6,9 @@ discount: 0.98
 eval_frequency: 10000  # how often to evaluate the agent in learning steps
 eval_rollouts: 10  # how many rollouts to average over when evaluating
 update_freq: 1
-project: "only FB loss"
+project: "walker-rnd"
 
-name: "test"
+name: "cexp 0.01qloss tau0.7 79"
 save_dir: "./agents/cexp/save"
 preprocessor_hidden_dimension: 1024
 preprocessor_hidden_layers: 2
@@ -40,7 +40,7 @@ use_trans: true
 use_forward_backward_cross: false
 use_cross_attention: true
 use_cons: false
-use_distribution: true
+use_distribution: false
 use_film_cond: false
 ensemble_size: 1
 num_atoms: 51
@@ -59,7 +59,7 @@ dr3_coefficient: 0.1
 use_2branch: false
 use_auxiliary: false
 auxiliary_coefficient: 1
-use_OFE: true
+use_OFE: false
 q_coefficient: 1
 use_m_cons: false
 use_feature_norm: false
@@ -82,7 +82,7 @@ actor_activation: "relu"
 
 seed: 42
 critic_learning_rate: 0.00008
-actor_learning_rate: 0.00008
+actor_learning_rate: 0.00005
 learning_steps: 2000000
 b_learning_rate_coefficient: 1
 g_learning_rate_coefficient: 1

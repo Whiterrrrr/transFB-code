@@ -130,11 +130,9 @@ class ForwardRepresentation(nn.Module):
         forward_hidden_layers: int,
         device: torch.device,
         forward_activation: str,
-        use_2branch = False,
         dual_rep=False
     ):
         super().__init__()
-        self.use_2branch = use_2branch
         self.dual_rep = dual_rep
         self.z_dimension = z_dimension
         self.device = device
@@ -218,17 +216,6 @@ class ForwardRepresentation(nn.Module):
                 activation=forward_activation,
             )
             
-            if use_2branch:
-                self.scale_branch = ForwardModel(
-                    preprocessor_feature_space_dimension=preprocessor_feature_space_dimension,
-                    number_of_preprocessed_features=number_of_features,
-                    z_dimension=1,
-                    hidden_dimension=forward_hidden_dimension,
-                    hidden_layers=1,
-                    device=device,
-                    activation=forward_activation,
-                )
-
     def forward(
         self, observation: torch.Tensor, action: torch.Tensor=None, z: torch.Tensor=None, s_only=False
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -245,17 +232,6 @@ class ForwardRepresentation(nn.Module):
             return F1_sz, F2_sz
         else:
             h = torch.cat([obs_action_embedding, obs_z_embedding], dim=-1)
-            if self.use_2branch:
-                scale = self.scale_branch(h)
-                f1 = torch.sqrt(
-                    torch.tensor(self.z_dimension, dtype=torch.int, device=self.device)
-                ) * torch.nn.functional.normalize(self.F1(h), dim=1)
-                
-                f2 = torch.sqrt(
-                    torch.tensor(self.z_dimension, dtype=torch.int, device=self.device)
-                ) * torch.nn.functional.normalize(self.F2(h), dim=1)
-                return f1 * scale, f2 * scale
-
             return self.F1(h), self.F2(h)
 
 
@@ -432,7 +408,6 @@ class StateForwardRepresentation(torch.nn.Module):
         device: torch.device,
         forward_activation: str,
         forward_output_dimension = None,
-        use_2branch = False
     ):
         super().__init__()
         if not forward_output_dimension:
@@ -457,8 +432,6 @@ class StateForwardRepresentation(torch.nn.Module):
             hidden_layers=forward_hidden_layers,
             device=device,
             activation=forward_activation,
-            # forward_output_dimension=forward_output_dimension,
-            # use_2branch=use_2branch
         )
         
     def forward(

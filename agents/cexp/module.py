@@ -22,6 +22,31 @@ def weight_init(m) -> None:
             m.bias.data.fill_(0.0)
             
             
+class V_net(AbstractMLP):
+    def __init__(
+        self,
+        input_dimension: int,
+        hidden_dimension: int,
+        hidden_layers: int,
+        device: torch.device,
+        activation: str,
+        layernorm = True
+    ):
+        super().__init__(
+            input_dimension=input_dimension,
+            output_dimension=1,
+            hidden_dimension=hidden_dimension,
+            hidden_layers=hidden_layers,
+            activation=activation,
+            device=device,
+            layernorm=layernorm
+        )
+        self.apply(weight_init)
+
+    def forward(self, observation: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+        V = self.trunk(torch.cat([observation, z], dim=-1))
+        return V 
+            
 class Linear_block(nn.Module):
     def __init__(self, hidden_dim, n_linear_layers, device):
         super(Linear_block, self).__init__()
@@ -160,7 +185,6 @@ class BidirectionalAttentionMixnet(nn.Module):
         self, 
         z_dim, 
         hidden_dim, 
-        num_attention_heads, 
         n_attention_layers, 
         n_linear_layers, 
         dropout_rate, 
@@ -168,29 +192,23 @@ class BidirectionalAttentionMixnet(nn.Module):
         use_res, 
         use_fed, 
         use_cross_attention=False, 
-        use_dr3=False,
-        use_feature_norm=False,
         use_distribution=False,
         ensemble_size: int = 0,
         num_atoms=51,
         use_film_cond=False,
         use_linear_res=False,
-        use_forward_backward_cross=False
     ):
         super(BidirectionalAttentionMixnet, self).__init__()
         self.use_res = use_res
         self.attention_layers = nn.ModuleList()
         self.linear_layers = nn.ModuleList()
         self.use_cross_attention = use_cross_attention
-        self.use_dr3 = use_dr3
-        self.use_feature_norm=use_feature_norm
         self.use_distribution=use_distribution
         self.ensemble_size=ensemble_size
         self.num_atoms = num_atoms
         self.use_film_cond=use_film_cond
         self.file_cnt = 0
         self.use_linear_res=use_linear_res
-        self.use_forward_backward_cross=use_forward_backward_cross
         
         if self.use_film_cond:
             self.film_generator = nn.Linear(z_dim, hidden_dim * 2).to(device)
@@ -203,7 +221,7 @@ class BidirectionalAttentionMixnet(nn.Module):
                 self.attention_layers.append(nn.Linear(z_dim * 4, z_dim).to(device))
                 self.attention_layers.append(nn.LayerNorm(z_dim).to(device))
         self.linear_layers.append(nn.Linear(z_dim, hidden_dim).to(device)) if self.use_cross_attention else self.linear_layers.append(nn.Linear(z_dim * 2, hidden_dim).to(device))
-        self.linear_layers.append(nn.LeakyReLU().to(device))
+        # self.linear_layers.append(nn.LeakyReLU().to(device))
         n_linear_layers -= 1
         
         if self.use_distribution:
@@ -218,24 +236,14 @@ class BidirectionalAttentionMixnet(nn.Module):
         else:
             for _ in range(n_linear_layers-1):
                 self.linear_layers.append(nn.Linear(hidden_dim, hidden_dim).to(device))
-                self.linear_layers.append(nn.LeakyReLU().to(device))
-                    # self.linear_layers.append(nn.LayerNorm(hidden_dim).to(device))
+                # self.linear_layers.append(nn.LeakyReLU().to(device))
+                # self.linear_layers.append(nn.LayerNorm(hidden_dim).to(device))
             self.output = nn.Linear(hidden_dim, 1).to(device)
         self.apply(weight_init)
     
     def forward(self, forward_rep, backward_rep):
         f_len, b_len = torch.norm(forward_rep, p=2, dim=1), torch.norm(backward_rep, p=2, dim=1)
-        if self.use_forward_backward_cross:
-            combined1 = combined2 = combined_output = None
-            for layer in self.attention_layers:
-                if isinstance(layer, CrossAttention):
-                    combined1 = layer(backward_rep.unsqueeze(1), forward_rep.unsqueeze(1)) if combined1 is None else layer(combined1, combined2)
-                    combined2 = layer(forward_rep.unsqueeze(1), backward_rep.unsqueeze(1)) if combined2 is None else layer(combined2, combined1)
-                else:
-                    combined1 = layer(combined1)
-                    combined2 = layer(combined2)
-            combined_output = combined1.squeeze(1) + combined2.squeeze(1)
-        elif not self.use_cross_attention:
+        if not self.use_cross_attention:
             combined = torch.cat((forward_rep.unsqueeze(1), backward_rep.unsqueeze(1)), dim=1)
             for layer in self.attention_layers:
                 combined = combined + layer(combined) if (isinstance(layer, SelfAttention) and self.use_res) else layer(combined)
@@ -259,18 +267,7 @@ class BidirectionalAttentionMixnet(nn.Module):
                 self.file_cnt = 1
             linear_cnt += 1
         if self.use_distribution:
-            # u_set, std_set = [], []
-            # for linear in self.linear_ensemble:
-            #     u, std = linear(combined_output)
-            #     u_set.append(u)
-            #     std_set.append(std)
-            # return self.linear(combined_output)
-            # return u_set, std_set
             return self.softmax(self.output(combined_output))
-        if self.use_dr3:
-            return self.output(combined_output), combined_output
-        if self.use_feature_norm:
-            combined_output = combined_output / combined_output.norm(p=2, dim=1, keepdim=True)
         return self.output(combined_output).squeeze() * f_len * b_len
     
     
@@ -285,7 +282,6 @@ class MixNetRepresentation(torch.nn.Module):
         preprocessor_activation: str,
         number_of_features: int,
         z_dimension: int,
-        use_trasnformer: bool,
         forward_hidden_dimension: int,
         forward_hidden_layers: int,
         backward_preprocess: bool,
@@ -295,24 +291,17 @@ class MixNetRepresentation(torch.nn.Module):
         backward_preporcess_activation: str,
         backward_hidden_dimension: int,
         backward_hidden_layers: int,
-        operator_hidden_dimension: int,
-        operator_hidden_layers: int,
         trans_dimension: int,
-        num_attention_heads: int,
         n_attention_layers: int,
         n_linear_layers: int,
         dropout_rate: float,
         forward_activation: str,
         backward_activation: str,
-        operator_activation: str,
         orthonormalisation_coefficient: float,
         discount: float,
         device: torch.device,
         use_res: bool,
         use_fed: bool,
-        use_2branch: bool,
-        use_dr3,
-        use_feature_norm,
         use_cross_attention: bool,
         use_distribution: bool,
         use_OFE: bool,
@@ -322,7 +311,6 @@ class MixNetRepresentation(torch.nn.Module):
         num_atoms: int = 51,
         use_film_cond: bool = False,
         use_linear_res=False,
-        use_forward_backward_cross=False
     ):
         super().__init__()
         self.forward_representation = ORERepresentation(
@@ -350,7 +338,6 @@ class MixNetRepresentation(torch.nn.Module):
             forward_hidden_layers=forward_hidden_layers,
             device=device,
             forward_activation=forward_activation,
-            use_2branch=use_2branch
         )
 
         self.backward_representation = BackwardRepresentation(
@@ -392,7 +379,6 @@ class MixNetRepresentation(torch.nn.Module):
             forward_hidden_layers=forward_hidden_layers,
             device=device,
             forward_activation=forward_activation,
-            use_2branch=use_2branch
         )
 
         self.backward_representation_target = BackwardRepresentation(
@@ -409,64 +395,39 @@ class MixNetRepresentation(torch.nn.Module):
             backward_preporcess_activation=backward_preporcess_activation,
         )
         
-        if not use_trasnformer:
-            self.operator = MixNet(
-                z_dimension=z_dimension,
-                hidden_dimension=operator_hidden_dimension,
-                hidden_layers=operator_hidden_layers,
-                device=device,
-                activation=operator_activation,
-            )
-            
-            self.operator_target = MixNet(
-                z_dimension=z_dimension,
-                hidden_dimension=operator_hidden_dimension,
-                hidden_layers=operator_hidden_layers,
-                device=device,
-                activation=operator_activation,
-            )
-        else:
-            self.operator = BidirectionalAttentionMixnet(
-                z_dim=z_dimension,
-                hidden_dim=trans_dimension,
-                num_attention_heads=num_attention_heads,
-                n_attention_layers=n_attention_layers,
-                n_linear_layers=n_linear_layers,
-                dropout_rate=dropout_rate,
-                device=device,
-                use_res=use_res,
-                use_fed=use_fed,
-                use_cross_attention=use_cross_attention,
-                use_dr3=use_dr3,
-                use_feature_norm=use_feature_norm,
-                use_distribution=use_distribution,
-                ensemble_size=ensemble_size,
-                num_atoms=num_atoms,
-                use_film_cond=use_film_cond,
-                use_linear_res=use_linear_res,
-                use_forward_backward_cross=use_forward_backward_cross
-            )
-            
-            self.operator_target = BidirectionalAttentionMixnet(
-                z_dim=z_dimension,
-                hidden_dim=trans_dimension,
-                num_attention_heads=num_attention_heads,
-                n_attention_layers=n_attention_layers,
-                n_linear_layers=n_linear_layers,
-                dropout_rate=dropout_rate,
-                device=device,
-                use_res=use_res,
-                use_fed=use_fed,
-                use_cross_attention=use_cross_attention,
-                use_dr3=use_dr3,
-                use_feature_norm=use_feature_norm,
-                use_distribution=use_distribution,
-                ensemble_size=ensemble_size,
-                num_atoms=num_atoms,
-                use_film_cond=use_film_cond,
-                use_linear_res=use_linear_res,
-                use_forward_backward_cross=use_forward_backward_cross
-            )
+        self.operator = BidirectionalAttentionMixnet(
+            z_dim=z_dimension,
+            hidden_dim=trans_dimension,
+            n_attention_layers=n_attention_layers,
+            n_linear_layers=n_linear_layers,
+            dropout_rate=dropout_rate,
+            device=device,
+            use_res=use_res,
+            use_fed=use_fed,
+            use_cross_attention=use_cross_attention,
+            use_distribution=use_distribution,
+            ensemble_size=ensemble_size,
+            num_atoms=num_atoms,
+            use_film_cond=use_film_cond,
+            use_linear_res=use_linear_res,
+        )
+        
+        self.operator_target = BidirectionalAttentionMixnet(
+            z_dim=z_dimension,
+            hidden_dim=trans_dimension,
+            n_attention_layers=n_attention_layers,
+            n_linear_layers=n_linear_layers,
+            dropout_rate=dropout_rate,
+            device=device,
+            use_res=use_res,
+            use_fed=use_fed,
+            use_cross_attention=use_cross_attention,
+            use_distribution=use_distribution,
+            ensemble_size=ensemble_size,
+            num_atoms=num_atoms,
+            use_film_cond=use_film_cond,
+            use_linear_res=use_linear_res,
+        )
         self.apply(weight_init)
         self._discount = discount
         self.orthonormalisation_coefficient = orthonormalisation_coefficient
