@@ -30,7 +30,6 @@ class CEXP(AbstractAgent):
         backward_hidden_layers: int,
         use_res: bool,
         trans_hidden_dimension: int,
-        num_attention_heads: int,
         n_attention_layers: int,
         n_linear_layers: int,
         dropout_rate: float,
@@ -56,7 +55,6 @@ class CEXP(AbstractAgent):
         std_dev_clip: float,
         std_dev_schedule: str,
         tau: float,
-        alpha: float,
         target_conservative_penalty: float,
         device: torch.device,
         name: str,
@@ -98,7 +96,6 @@ class CEXP(AbstractAgent):
             discount=discount,
             device=device,
             trans_dimension=trans_hidden_dimension,
-            num_attention_heads=num_attention_heads,
             n_attention_layers=n_attention_layers,
             n_linear_layers=n_linear_layers,
             dropout_rate=dropout_rate,
@@ -155,7 +152,6 @@ class CEXP(AbstractAgent):
         self.Operate.operator_target.load_state_dict(
             self.Operate.operator.state_dict()
         )
-        self.alpha = alpha
         self.target_conservative_penalty = target_conservative_penalty
         self.use_distribution = use_distribution
         self._device = device
