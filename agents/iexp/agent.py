@@ -74,6 +74,8 @@ class IEXP(AbstractAgent):
         use_2branch,
         use_cross_attention = False,
         use_AWAR = False,
+        associativity_loss_coefficient:int = 100,
+        use_associativity_loss = False,
     ):
         super().__init__(
             observation_length=observation_length,
@@ -139,6 +141,9 @@ class IEXP(AbstractAgent):
         self.encoder = torch.nn.Identity()
         self.augmentation = torch.nn.Identity()
 
+        self.use_associativity_loss = use_associativity_loss
+        self.associativity_loss_coefficient = associativity_loss_coefficient
+        
         # load weights into target networks
         self.Operate.forward_representation_target.load_state_dict(
             self.Operate.forward_representation.state_dict()
@@ -393,6 +398,13 @@ class IEXP(AbstractAgent):
             v_loss = asymmetric_l2_loss(adv, self.asymmetric_l2_tau)
             total_loss += v_loss * self.q_coefficient
 
+        # -- ensure that (FoB)*r (=M*r) = Fo(B*r) (=Foz), using both M1, M2, F1, F2 --
+        if self.use_associativity_loss:
+            fob_r = torch.matmul(self.Operate.operator(torch.cat((F1, F2), dim=0), torch.cat((B_next, B_next), dim=0)), torch.cat((observations_rand, observations_rand), dim=0))
+            foz = self.Operate.operator(torch.cat((F1, F2), dim=1),torch.cat((zs , zs), dim=0))
+            associativity_loss = F.mse_loss(fob_r, foz) 
+            total_loss += associativity_loss * self.associativity_loss_coefficient
+        
         # --- orthonormalisation loss ---
         covariance = torch.matmul(B_next, B_next.T)
         I = torch.eye(*covariance.size(), device=self._device)  # next state = s_{t+1}

@@ -125,7 +125,7 @@ class CEXP(AbstractAgent):
             orthonormalisation_coefficient=orthonormalisation_coefficient,
             discount=discount,
             device=device,
-            use_trasnformer=use_trans,
+            use_transformer=use_trans,
             trans_dimension=trans_hidden_dimension,
             num_attention_heads=num_attention_heads,
             n_attention_layers=n_attention_layers,

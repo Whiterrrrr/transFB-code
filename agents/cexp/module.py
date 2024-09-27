@@ -283,7 +283,7 @@ class MixNetRepresentation(torch.nn.Module):
         preprocessor_activation: str,
         number_of_features: int,
         z_dimension: int,
-        use_trasnformer: bool,
+        use_transformer: bool,
         forward_hidden_dimension: int,
         forward_hidden_layers: int,
         backward_preprocess: bool,
@@ -407,23 +407,8 @@ class MixNetRepresentation(torch.nn.Module):
             backward_preporcess_activation=backward_preporcess_activation,
         )
         
-        if not use_trasnformer:
-            self.operator = MixNet(
-                z_dimension=z_dimension,
-                hidden_dimension=operator_hidden_dimension,
-                hidden_layers=operator_hidden_layers,
-                device=device,
-                activation=operator_activation,
-            )
-            
-            self.operator_target = MixNet(
-                z_dimension=z_dimension,
-                hidden_dimension=operator_hidden_dimension,
-                hidden_layers=operator_hidden_layers,
-                device=device,
-                activation=operator_activation,
-            )
-        else:
+        
+        if use_transformer:
             self.operator = BidirectionalAttentionMixnet(
                 z_dim=z_dimension,
                 hidden_dim=trans_dimension,
@@ -465,6 +450,24 @@ class MixNetRepresentation(torch.nn.Module):
                 use_linear_res=use_linear_res,
                 use_forward_backward_cross=use_forward_backward_cross
             )
+            
+        else:
+            self.operator = MixNet(
+                z_dimension=z_dimension,
+                hidden_dimension=operator_hidden_dimension,
+                hidden_layers=operator_hidden_layers,
+                device=device,
+                activation=operator_activation,
+            )
+            
+            self.operator_target = MixNet(
+                z_dimension=z_dimension,
+                hidden_dimension=operator_hidden_dimension,
+                hidden_layers=operator_hidden_layers,
+                device=device,
+                activation=operator_activation,
+            )
+        
         self.apply(weight_init)
         self._discount = discount
         self.orthonormalisation_coefficient = orthonormalisation_coefficient

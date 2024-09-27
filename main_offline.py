@@ -20,6 +20,7 @@ from agents.calfb.agent import CalFB
 from agents.td3.agent import TD3
 from agents.cexp.agent import CEXP  
 from agents.iexp.agent import IEXP
+from agents.lolocexp.agent import LOLOCEXP
 from agents.fb.replay_buffer import FBReplayBuffer
 from rewards import RewardFunctionConstructor
 from utils import set_seed_everywhere, BASE_DIR
@@ -94,7 +95,7 @@ dataset_path = (
     / config["exploration_algorithm"]
     / "dataset.npz"
 )
-if config["algorithm"] in ("fb", "vcfb", "mcfb", "vcalfb", "mcalfb", 'cexp', 'iexp', 'ifb'):
+if config["algorithm"] in ("fb", "vcfb", "mcfb", "vcalfb", "mcalfb", 'cexp', 'iexp', 'ifb', 'lolocexp'):
     relabel = False
 else:
     relabel = True
@@ -592,6 +593,108 @@ elif config["algorithm"] == "iexp":
         f_loss_coefficient=config['f_loss_coefficient'],
         asymmetric_l2_tau=config['asymmetric_l2_tau'],
         use_AWAR = config['use_AWAR'],
+    )
+    
+    replay_buffer = FBReplayBuffer(
+        reward_constructor=reward_constructor,
+        dataset_path=dataset_path,
+        transitions=config["dataset_transitions"],
+        relabel=relabel,
+        task=config["train_task"],
+        device=config["device"],
+        discount=config["discount"],
+        action_condition=config["action_condition"],
+    )
+
+    z_inference_steps = config["z_inference_steps"]
+    train_std = config["std_dev_schedule"]
+    eval_std = config["std_dev_eval"]
+    
+elif config["algorithm"] == "lolocexp":
+    if config["domain_name"] == "point_mass_maze":
+        config["discount"] = 0.99
+        config["z_dimension"] = 100
+    agent = LOLOCEXP(
+        observation_length=observation_length,
+        action_length=action_length,
+        preprocessor_hidden_dimension=config["preprocessor_hidden_dimension"],
+        preprocessor_output_dimension=config["preprocessor_output_dimension"],
+        preprocessor_hidden_layers=config["preprocessor_hidden_layers"],
+        preprocessor_activation=config["preprocessor_activation"],
+        z_dimension=config["z_dimension"],
+        forward_hidden_dimension=config["forward_hidden_dimension"],
+        forward_hidden_layers=config["forward_hidden_layers"],
+        forward_number_of_features=config["forward_number_of_features"],
+        backward_hidden_dimension=config["backward_hidden_dimension"],
+        backward_hidden_layers=config["backward_hidden_layers"],
+        operator_hidden_dimension=config["operator_hidden_dimension"],
+        operator_hidden_layers=config["operator_hidden_layers"],
+        actor_hidden_dimension=config["actor_hidden_dimension"],
+        actor_hidden_layers=config["actor_hidden_layers"],
+        forward_activation=config["forward_activation"],
+        backward_activation=config["backward_activation"],
+        operator_activation=config["operator_activation"],
+        actor_activation=config["actor_activation"],
+        actor_learning_rate=config["actor_learning_rate"],
+        critic_learning_rate=config["critic_learning_rate"],
+        b_learning_rate_coefficient=config["b_learning_rate_coefficient"],
+        g_learning_rate_coefficient=config["g_learning_rate_coefficient"],
+        orthonormalisation_coefficient=config["orthonormalisation_coefficient"],
+        q_coefficient=config["q_coefficient"],
+        discount=config["discount"],
+        batch_size=config["batch_size"],
+        z_mix_ratio=config["z_mix_ratio"],
+        gaussian_actor=config["gaussian_actor"],
+        std_dev_clip=config["std_dev_clip"],
+        std_dev_schedule=config["std_dev_schedule"],
+        tau=config["tau"],
+        total_action_samples=config["total_action_samples"],
+        ood_action_weight=config["ood_action_weight"],        
+        alpha=config["alpha"],
+        target_conservative_penalty=config["target_conservative_penalty"],
+        device=config["device"],
+        name=config["name"],
+        lagrange=config["lagrange"],
+        use_trans=config["use_trans"],
+        trans_hidden_dimension=config["trans_hidden_dimension"],
+        n_attention_layers=config["n_attention_layers"],
+        n_linear_layers=config["n_linear_layers"],
+        dropout_rate=config["dropout_rate"],
+        backward_preprocess=config["backward_preprocess"],
+        backward_preporcess_hidden_dimension=config["backward_preporcess_hidden_dimension"],
+        backward_preprocess_hidden_layers=config["backward_preprocess_hidden_layers"],
+        backward_preporcess_activation=config["backward_preprocess_activation"],
+        backward_preprocess_output_dimension=config["backward_preprocess_output_dimension"],
+        use_cons=config["use_cons"],
+        num_attention_heads=config['num_attention_heads'],
+        use_q_loss=config['use_q_loss'],
+        use_res=config['use_res'],
+        use_fed=config['use_fed'],
+        M_pealty_coefficient=config['M_pealty_coefficient'],
+        use_m_cons=config['use_m_cons'],
+        use_dr3=config['use_dr3'],
+        use_2branch = config['use_2branch'],
+        update_freq=config['update_freq'],
+        dr3_coefficient=config['dr3_coefficient'],
+        use_cross_attention=config['use_cross_attention'],
+        reset_interval=config['reset_interval'],
+        use_feature_norm=config['use_feature_norm'],
+        use_dormant=config['use_dormant'],
+        use_OFE = config['use_OFE'],
+        use_auxiliary = config['use_auxiliary'],
+        auxiliary_coefficient = config['auxiliary_coefficient'],
+        FF_pred_hidden_dimension = config['FF_pred_hidden_dimension'],
+        FF_pred_hidden_layers = config['FF_pred_hidden_layers'],
+        FF_pred_activation = config['FF_pred_activation'],
+        use_distribution=config['use_distribution'],
+        ensemble_size = config['ensemble_size'],
+        num_atoms=config['num_atoms'],
+        minVal=config['minVal'],
+        maxVal=config['maxVal'],
+        use_gamma_loss=config['use_gamma_loss'],
+        use_film_cond=config['use_film_cond'],
+        use_linear_res=config['use_linear_res'],
+        use_forward_backward_cross=config['use_forward_backward_cross'],
     )
     
     replay_buffer = FBReplayBuffer(

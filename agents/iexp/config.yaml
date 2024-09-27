@@ -1,3 +1,5 @@
+project: "iexp associativity"
+
 # training/eval
 batch_size: 128
 max_buffer_episodes: 5000
@@ -79,3 +81,5 @@ tau: 0.01
 asymmetric_l2_tau: 0.9
 
 
+use_associativity_loss: false
+associativity_loss_coefficient: 100
