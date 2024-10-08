@@ -130,12 +130,14 @@ class ForwardRepresentation(nn.Module):
         forward_hidden_layers: int,
         device: torch.device,
         forward_activation: str,
-        dual_rep=False
+        dual_rep=False,
+        feature_reg=False
     ):
         super().__init__()
         self.dual_rep = dual_rep
         self.z_dimension = z_dimension
         self.device = device
+        self.feature_reg = feature_reg
         # pre-processors
         self.obs_action_preprocessor = AbstractPreprocessor(
             observation_length=observation_length,
@@ -161,18 +163,18 @@ class ForwardRepresentation(nn.Module):
             self.F1_sz = ForwardModel(
                 preprocessor_feature_space_dimension=preprocessor_feature_space_dimension,
                 number_of_preprocessed_features=1,
-                z_dimension=z_dimension,
+                z_dimension=z_dimension if not self.feature_reg else forward_hidden_dimension,
                 hidden_dimension=forward_hidden_dimension,
-                hidden_layers=forward_hidden_layers,
+                hidden_layers=forward_hidden_layers if not self.feature_reg else forward_hidden_layers-1,
                 device=device,
                 activation=forward_activation,
             )
             self.F1_az = ForwardModel(
                 preprocessor_feature_space_dimension=preprocessor_feature_space_dimension,
                 number_of_preprocessed_features=1,
-                z_dimension=z_dimension,
+                z_dimension=z_dimension if not self.feature_reg else forward_hidden_dimension,
                 hidden_dimension=forward_hidden_dimension,
-                hidden_layers=forward_hidden_layers,
+                hidden_layers=forward_hidden_layers if not self.feature_reg else forward_hidden_layers-1,
                 device=device,
                 activation=forward_activation,
             )
@@ -180,28 +182,33 @@ class ForwardRepresentation(nn.Module):
             self.F2_sz = ForwardModel(
                 preprocessor_feature_space_dimension=preprocessor_feature_space_dimension,
                 number_of_preprocessed_features=1,
-                z_dimension=z_dimension,
+                z_dimension=z_dimension if not self.feature_reg else forward_hidden_dimension,
                 hidden_dimension=forward_hidden_dimension,
-                hidden_layers=forward_hidden_layers,
+                hidden_layers=forward_hidden_layers if not self.feature_reg else forward_hidden_layers-1,
                 device=device,
                 activation=forward_activation,
             )
             self.F2_az = ForwardModel(
                 preprocessor_feature_space_dimension=preprocessor_feature_space_dimension,
                 number_of_preprocessed_features=1,
-                z_dimension=z_dimension,
+                z_dimension=z_dimension if not self.feature_reg else forward_hidden_dimension,
                 hidden_dimension=forward_hidden_dimension,
-                hidden_layers=forward_hidden_layers,
+                hidden_layers=forward_hidden_layers if not self.feature_reg else forward_hidden_layers-1,
                 device=device,
                 activation=forward_activation,
             )
+            if self.feature_reg:
+                self.out_s1 = nn.Linear(forward_hidden_dimension, z_dimension).to(device)
+                self.out_a1 = nn.Linear(forward_hidden_dimension, z_dimension).to(device)
+                self.out_s2 = nn.Linear(forward_hidden_dimension, z_dimension).to(device)
+                self.out_a2 = nn.Linear(forward_hidden_dimension, z_dimension).to(device)
         else:
             self.F1 = ForwardModel(
                 preprocessor_feature_space_dimension=preprocessor_feature_space_dimension,
                 number_of_preprocessed_features=number_of_features,
-                z_dimension=z_dimension,
+                z_dimension=z_dimension if not self.feature_reg else forward_hidden_dimension,
                 hidden_dimension=forward_hidden_dimension,
-                hidden_layers=forward_hidden_layers,
+                hidden_layers=forward_hidden_layers if not self.feature_reg else forward_hidden_layers-1,
                 device=device,
                 activation=forward_activation,
             )
@@ -209,12 +216,15 @@ class ForwardRepresentation(nn.Module):
             self.F2 = ForwardModel(
                 preprocessor_feature_space_dimension=preprocessor_feature_space_dimension,
                 number_of_preprocessed_features=number_of_features,
-                z_dimension=z_dimension,
+                z_dimension=z_dimension if not self.feature_reg else forward_hidden_dimension,
                 hidden_dimension=forward_hidden_dimension,
-                hidden_layers=forward_hidden_layers,
+                hidden_layers=forward_hidden_layers if not self.feature_reg else forward_hidden_layers-1,
                 device=device,
                 activation=forward_activation,
             )
+            if self.feature_reg:
+                self.out_1 = nn.Linear(forward_hidden_dimension, z_dimension).to(device)
+                self.out_2 = nn.Linear(forward_hidden_dimension, z_dimension).to(device)
             
     def forward(
         self, observation: torch.Tensor, action: torch.Tensor=None, z: torch.Tensor=None, s_only=False
@@ -228,11 +238,21 @@ class ForwardRepresentation(nn.Module):
             F1_sz, F2_sz = self.F1_sz(obs_z_embedding), self.F2_sz(obs_z_embedding)
             if not s_only:
                 F1_az, F2_az = self.F1_az(obs_action_embedding), self.F2_az(obs_action_embedding)
-                return F1_sz + F1_az, F2_sz + F2_az, F1_sz, F2_sz
-            return F1_sz, F2_sz
+                if not self.feature_reg:
+                    return F1_sz + F1_az, F2_sz + F2_az, F1_sz, F2_sz 
+                else:
+                    return self.out_s1(F1_sz) + self.out_a1(F1_az), self.out_s2(F2_sz) + self.out_a2(F2_az), \
+                        self.out_s1(F1_sz), self.out_s2(F2_sz), F1_sz + F1_az, F2_sz + F2_az, F1_sz, F2_sz 
+            if not self.feature_reg:
+                return F1_sz, F2_sz 
+            else:
+                return self.out_s1(F1_sz), self.out_s2(F2_sz), F1_sz, F2_sz
         else:
             h = torch.cat([obs_action_embedding, obs_z_embedding], dim=-1)
-            return self.F1(h), self.F2(h)
+            if not self.feature_reg:
+                return self.F1(h), self.F2(h)
+            else:
+                return self.out_1(self.F1(h)), self.out_2(self.F2(h)), self.F1(h), self.F2(h)
 
 
 class BackwardRepresentation(torch.nn.Module):

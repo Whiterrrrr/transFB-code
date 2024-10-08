@@ -69,6 +69,7 @@ class CEXP(AbstractAgent):
         use_film_cond: bool = False,
         use_linear_res: bool = False,
         iql_tau: float = 0.7,
+        feature_reg=False
     ):
         super().__init__(
             observation_length=observation_length,
@@ -112,6 +113,7 @@ class CEXP(AbstractAgent):
             num_atoms=num_atoms,
             use_film_cond=use_film_cond,
             use_linear_res=use_linear_res,
+            feature_reg=feature_reg
         )
 
         self.V_net = V_net(
@@ -164,6 +166,7 @@ class CEXP(AbstractAgent):
         self.support = torch.linspace(minVal, maxVal, num_atoms, device=device)
         self.q_loss_coeff = q_loss_coeff
         self.iql_tau = iql_tau
+        self.feature_reg = feature_reg
         
         self.Operate_optimizer = torch.optim.AdamW(
             [
@@ -306,7 +309,11 @@ class CEXP(AbstractAgent):
         with torch.no_grad():
             actor_std_dev = schedule(self.std_dev_schedule, step)
             next_actions, _ = self.actor(next_observations, zs, actor_std_dev, sample=True)
-            target_F1, target_F2 = self.Operate.forward_representation_target(observation=next_observations, z=zs, action=next_actions)
+            if not self.feature_reg:
+                target_F1, target_F2 = self.Operate.forward_representation_target(observation=next_observations, z=zs, action=next_actions)
+            else:
+                target_F1, target_F2, target_feature_1, target_feature_2 = self.Operate.forward_representation_target(observation=next_observations, z=zs, action=next_actions)
+              
             target_B = self.Operate.backward_representation_target(observation=observations_rand)
             if self.use_distribution:
                 target_M_dist = self.Operate.operator_target(
@@ -335,7 +342,11 @@ class CEXP(AbstractAgent):
                 ).squeeze()
                 target_M = torch.min(target_M[:target_B.size(0)], target_M[target_B.size(0):])
             
-        F1, F2 = self.Operate.forward_representation(observations, actions, zs)
+        if not self.feature_reg:
+            F1, F2 = self.Operate.forward_representation(observations, actions, zs)
+        else:
+            F1, F2, feature_1, feature_2 = self.Operate.forward_representation(observations, actions, zs)
+            F_reg = 0.5 * torch.mean(torch.sum(feature_1*target_feature_1, dim=1)) + 0.5 * torch.mean(torch.sum(feature_2*target_feature_2, dim=1))
         B = self.Operate.backward_representation(torch.cat((next_observations, observations_rand), dim=0))
         B_next, B_rand = B[:next_observations.size(0)], B[next_observations.size(0):]
 
@@ -367,6 +378,8 @@ class CEXP(AbstractAgent):
             fb_diag_loss = -sum(M.mean() for M in [M1_next, M2_next])
             fb_loss = fb_diag_loss + fb_off_diag_loss
         total_loss = fb_loss
+        if self.feature_reg:
+            total_loss += F_reg * 0.01
 
         covariance = torch.matmul(B_next, B_next.T)
         I = torch.eye(*covariance.size(), device=self._device)  # next state = s_{t+1}
@@ -429,6 +442,7 @@ class CEXP(AbstractAgent):
             "train/target_V": target_V.mean().item(),
             "train/forward_backward_v_loss": v_loss.mean().item(),
             "train/forward_backward_q_loss": q_loss.mean().item(),
+            "train/feature_reg": F_reg.mean().item() if self.feature_reg else 0,
         }
         return total_loss, metrics
 
@@ -439,7 +453,11 @@ class CEXP(AbstractAgent):
         std = schedule(self.std_dev_schedule, step)
         action, action_dist = self.actor(observation, z, std, sample=True)
 
-        F1, F2 = self.Operate.forward_representation(observation=observation, z=z, action=action)
+        if not self.feature_reg:
+            F1, F2 = self.Operate.forward_representation(observation=observation, z=z, action=action)
+        else:
+            F1, F2, _, _ = self.Operate.forward_representation(observation=observation, z=z, action=action)
+          
         if self.use_distribution:
             Q_dist = self.Operate.operator(torch.cat((F1, F2), dim=0),torch.cat((z, z), dim=0)).squeeze()
             Q1_dist, Q2_dist = Q_dist[:z.size(0)], Q_dist[z.size(0):]
@@ -505,7 +523,11 @@ class CEXP(AbstractAgent):
     def predict_q(
         self, observation: torch.Tensor, z: torch.Tensor, action: torch.Tensor, discounts: torch.Tensor
     ):
-        F1, F2 = self.Operate.forward_representation(observation=observation, z=z, action=action)
+        if not self.feature_reg:
+            F1, F2 = self.Operate.forward_representation(observation=observation, z=z, action=action)
+        else:
+            F1, F2, _, _ = self.Operate.forward_representation(observation=observation, z=z, action=action)
+        
         if self.use_distribution:
             Q_dist = self.Operate.operator(
                 torch.cat((F1, F2), dim=0),

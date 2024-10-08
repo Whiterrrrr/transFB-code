@@ -489,6 +489,7 @@ elif config["algorithm"] == "cexp":
         use_linear_res=config['use_linear_res'],
         q_loss_coeff=config['q_loss_coeff'],
         iql_tau=config['iql_tau'],
+        feature_reg=config['feature_reg']
     )
     
     replay_buffer = FBReplayBuffer(

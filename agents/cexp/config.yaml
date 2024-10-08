@@ -40,7 +40,7 @@ trans_hidden_dimension: 1024
 n_attention_layers: 2
 n_linear_layers: 2
 dropout_rate: 0.01
-
+feature_reg: true
 actor_hidden_dimension: 1024
 actor_hidden_layers: 2
 actor_activation: "relu"

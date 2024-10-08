@@ -311,6 +311,7 @@ class MixNetRepresentation(torch.nn.Module):
         num_atoms: int = 51,
         use_film_cond: bool = False,
         use_linear_res=False,
+        feature_reg=False
     ):
         super().__init__()
         self.forward_representation = ORERepresentation(
@@ -338,6 +339,7 @@ class MixNetRepresentation(torch.nn.Module):
             forward_hidden_layers=forward_hidden_layers,
             device=device,
             forward_activation=forward_activation,
+            feature_reg=feature_reg
         )
 
         self.backward_representation = BackwardRepresentation(
@@ -379,6 +381,7 @@ class MixNetRepresentation(torch.nn.Module):
             forward_hidden_layers=forward_hidden_layers,
             device=device,
             forward_activation=forward_activation,
+            feature_reg=feature_reg
         )
 
         self.backward_representation_target = BackwardRepresentation(
